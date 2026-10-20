@@ -39,8 +39,11 @@ class Settings(BaseSettings):
     ]
     OPENAI_API_KEY: str = Field(default="", repr=False)
 
-    # MCP 접속 주소만 설정합니다. 실제 도구 호출은 추후 구현합니다.
+    # MCP 서버 주소 (/mcp까지 포함). business-mcp 호출은 app/core/mcp_client.py, rag-mcp는 서버 준비 후 연결합니다.
     BUSINESS_MCP_URL: str = "http://127.0.0.1:8101/mcp"
+    # business-mcp 요청 헤더 X-Internal-Api-Key 값. business-mcp의 INTERNAL_API_KEY와 같아야 합니다.
+    # 지금은 INTERNAL_API_KEY와 같은 값을 쓰지만, 나중에 분리할 수 있도록 변수를 따로 둡니다.
+    BUSINESS_MCP_API_KEY: str = Field(default="", repr=False)
     RAG_MCP_URL: str = "http://127.0.0.1:8102/mcp"
     RAG_API_DOCS_URL: str = "http://127.0.0.1:8102/docs"
 
