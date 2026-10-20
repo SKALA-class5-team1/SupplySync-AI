@@ -1,4 +1,4 @@
-"""calc.py 단위 테스트. 기대값은 dataset/05_expected/6_sg3_quote.json과 대조한다."""
+"""calc.py 단위 테스트. 기대값은 fixtures/6_sg3_quote.json(dataset v2.2 05_expected 복사본)과 대조한다."""
 import json
 from datetime import date
 from pathlib import Path
@@ -14,7 +14,7 @@ from app.quote_drafting.calc import (
     calc_valid_until,
 )
 
-EXPECTED_PATH = Path(__file__).resolve().parents[2] / "dataset" / "05_expected" / "6_sg3_quote.json"
+EXPECTED_PATH = Path(__file__).resolve().parent / "fixtures" / "6_sg3_quote.json"
 EXPECTED = json.loads(EXPECTED_PATH.read_text(encoding="utf-8"))["quote_draft"]
 
 OPTION_PRICES = {"OPT-HT": 2400, "OPT-IP9K": 900, "OPT-UNUSED": 1500}

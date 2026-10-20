@@ -1,0 +1,180 @@
+{
+  "$comment": "SG3 정답. quote_id는 Spring이 생성 (create_quote 응답). 기준일 = 발행일 2026-10-19",
+  "quote_draft": {
+    "quote_id": null,
+    "rfq_number": "HB-EV7-EWP-001",
+    "recipient": "한별모터스 구매본부",
+    "item": "전동식 워터펌프 (EWP, 12V)",
+    "model_id": "EWP-12-B",
+    "options": [
+      "OPT-HT",
+      "OPT-IP9K"
+    ],
+    "unit_price_krw": 37300,
+    "price_breakdown": [
+      {
+        "code": "EWP-12-B",
+        "amount_krw": 34000
+      },
+      {
+        "code": "OPT-HT",
+        "amount_krw": 2400
+      },
+      {
+        "code": "OPT-IP9K",
+        "amount_krw": 900
+      }
+    ],
+    "parts_cost_krw": 21650,
+    "parts_cost_breakdown": [
+      {
+        "part_id": "P-MTR-BL12",
+        "cost_krw": 9500
+      },
+      {
+        "part_id": "P-MCU-G1",
+        "cost_krw": 5300
+      },
+      {
+        "part_id": "P-IMP-25",
+        "cost_krw": 1200
+      },
+      {
+        "part_id": "P-HSG-AL",
+        "cost_krw": 4100
+      },
+      {
+        "part_id": "P-SEAL-9K",
+        "cost_krw": 950
+      },
+      {
+        "part_id": "P-CON-4P",
+        "cost_krw": 600
+      }
+    ],
+    "margin_pct": 42.0,
+    "price_by_year": [
+      {
+        "year": 1,
+        "cr_applied": 0,
+        "unit_price_krw": 37300,
+        "margin_pct": 42.0
+      },
+      {
+        "year": 2,
+        "cr_applied": 1,
+        "unit_price_krw": 36181,
+        "margin_pct": 40.2
+      },
+      {
+        "year": 3,
+        "cr_applied": 2,
+        "unit_price_krw": 35096,
+        "margin_pct": 38.3
+      },
+      {
+        "year": 4,
+        "cr_applied": 3,
+        "unit_price_krw": 34043,
+        "margin_pct": 36.4
+      },
+      {
+        "year": 5,
+        "cr_applied": 4,
+        "unit_price_krw": 33021,
+        "margin_pct": 34.4
+      },
+      {
+        "year": 6,
+        "cr_applied": 5,
+        "unit_price_krw": 32031,
+        "margin_pct": 32.4
+      }
+    ],
+    "eau": 120000,
+    "sample_qty": 2000,
+    "sample_due_date": "2026-12-15",
+    "sop_date": "2027-09-01",
+    "incoterms": "DAP 한별모터스 울산 2공장",
+    "issue_date": "2026-10-19",
+    "valid_until": "2026-11-18",
+    "conditions": [
+      {
+        "type": "ASSUMPTION",
+        "field": "spec.flow",
+        "text": "유량은 22 L/min으로 가정 (사양서 표기 22 L/h)"
+      },
+      {
+        "type": "ASSUMPTION",
+        "field": "spec.connector",
+        "text": "커넥터는 표준 4핀으로 가정"
+      },
+      {
+        "type": "ASSUMPTION",
+        "field": "spec.coolant",
+        "text": "냉각수는 에틸렌글리콜 50% 혼합액으로 가정"
+      },
+      {
+        "type": "SUBSTITUTE_PART",
+        "text": "시작품 2,000개 중 500개에 대체 제어칩(누리칩스) 적용",
+        "part_id": "P-MCU-G1-ALT",
+        "qty": 500,
+        "extra_cost_krw": 150000,
+        "ref": "제20조, 제21조"
+      },
+      {
+        "type": "CONTRACT_PROPOSAL",
+        "field": "contract.warranty",
+        "text": "품질 보증 3년 / 100,000 km로 수정 제안. 단가는 보증 3년 기준이며 5년 수용 시 재산정",
+        "ref": "제12조"
+      },
+      {
+        "type": "CONTRACT_PROPOSAL",
+        "field": "contract.penalty_cap_pct",
+        "text": "지연 배상 상한 계약금액 10% 설정 제안",
+        "ref": "제13조"
+      }
+    ],
+    "checks": [
+      {
+        "rule": "PRICE",
+        "label": "가격",
+        "criterion": "단가 ≤ 목표가 38,000원",
+        "value": "37,300원",
+        "result": "PASS"
+      },
+      {
+        "rule": "ANNUAL_CR",
+        "label": "연간 인하",
+        "criterion": "CR ≤ 3%",
+        "value": "3%",
+        "result": "PASS",
+        "ref": "제11조"
+      },
+      {
+        "rule": "MARGIN",
+        "label": "마진",
+        "criterion": "부품 원가 기준 30% 이상 (1년차·6년차)",
+        "value": "42.0% / 32.4%",
+        "result": "PASS",
+        "ref": "제16조"
+      },
+      {
+        "rule": "PRICE_RECALC",
+        "label": "수치 일치",
+        "criterion": "단가 = 모델가 + 옵션가 합계",
+        "value": "34,000 + 2,400 + 900 = 37,300",
+        "result": "PASS"
+      },
+      {
+        "rule": "FORMAT",
+        "label": "문서 형식",
+        "criterion": "필수 8항목, 유효기간 발행일 + 30일",
+        "value": "누락 없음",
+        "result": "PASS",
+        "ref": "제17조"
+      }
+    ],
+    "status": "DRAFT"
+  }
+}
