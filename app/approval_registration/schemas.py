@@ -53,11 +53,11 @@ class DocHit(BaseModel):
 # ----------------------------------------------------------------------
 # 그래프 상태
 # ----------------------------------------------------------------------
-class ExpectedShortage(BaseModel):
-    """승인된 계획이 이미 감안한 부족분 (SG2 결과). 재확인 때 비교 기준으로 쓴다."""
+class Sg2Available(BaseModel):
+    """SG2 분석 때 확인한 부품별 가용 수량. 재확인 때 비교 기준으로 쓴다."""
 
     part_id: str = Field(examples=["P-MCU-G1"])
-    shortage: int = Field(description="SG2가 계산한 부족 수량", examples=[500])
+    available_at_sg2: int = Field(description="SG2 시점 가용 수량", examples=[1500])
 
 
 class ApprovalCard(BaseModel):
@@ -80,7 +80,7 @@ class SG4State(BaseModel):
     options: list[str] = Field(default_factory=list, examples=[["OPT-HT", "OPT-IP9K"]])
     qty: int = Field(description="재확인할 수량 (시작품 수량)", examples=[2000])
     due_date: str = Field(description="고객 납기 (YYYY-MM-DD)", examples=["2026-12-15"])
-    expected_shortages: list[ExpectedShortage] = Field(default_factory=list)
+    sg2_available: list[Sg2Available] = Field(default_factory=list, description="SG2 시점 부품별 가용 수량")
     quote_summary: str = ""
     approval_items: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)

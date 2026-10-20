@@ -72,19 +72,23 @@ async def request_approval(state: SG4State) -> dict[str, Any]:
 async def recheck_atp(state: SG4State) -> dict[str, Any]:
     """승인 직후 재고를 다시 조회한다.
 
-    승인된 계획(예: 대체 칩 500개)은 SG2 가 계산한 부족분을 이미 감안했다.
-    그래서 'has_shortage 가 false 인가'가 아니라 '부족분이 승인 때보다 커지지 않았나'를 본다.
-
+    SG2 때 확인한 부품별 가용 수량(sg2_available)과 지금 가용 수량을 비교해,
+    줄어든 부품이 있으면 등록하지 않는다. (정답 파일 7_sg4_register.json 의 recheck 방식)
     대체 부품이 충분한지는 SG2 가 계획을 세울 때 판단한 일이라 SG4 는 보지 않는다.
+    ATP 응답에 없는 부품은 비교하지 않는다.
     """
     atp = await tools.business_get_atp(state.model_id, state.options, state.qty, state.due_date)
-    allowed = {e.part_id: e.shortage for e in state.expected_shortages}
-    worse = [p for p in atp.parts if p.shortage > allowed.get(p.part_id, 0)]
+    now = {p.part_id: p.available for p in atp.parts}
+    worse = [
+        (e.part_id, e.available_at_sg2, now[e.part_id])
+        for e in state.sg2_available
+        if e.part_id in now and now[e.part_id] < e.available_at_sg2
+    ]
     update: dict[str, Any] = {"atp": atp, "atp_ok": not worse}
     if worse:
-        # TODO: 재고가 나빠졌을 때 처리 방식 확정 (지금은 사유만 남기고 종료)
+        # TODO: 재고가 줄었을 때 처리 방식 확정 (지금은 사유만 남기고 종료)
         update["error"] = "재고 변동: " + ", ".join(
-            f"{p.part_id} 부족 {p.shortage} (승인 때 {allowed.get(p.part_id, 0)})" for p in worse
+            f"{pid} 가용 {before} -> {after}" for pid, before, after in worse
         )
         logger.warning("SG4 재고 재확인 실패 thread_id=%s %s", state.thread_id, update["error"])
     return update

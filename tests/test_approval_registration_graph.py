@@ -24,7 +24,7 @@ BASE_INPUT = {
     "options": ["OPT-HT", "OPT-IP9K"],
     "qty": 2000,
     "due_date": "2026-12-15",
-    "expected_shortages": [{"part_id": "P-MCU-G1", "shortage": 500}],
+    "sg2_available": [{"part_id": "P-MCU-G1", "available_at_sg2": 1500}],
     "quote_summary": "EWP-12-B + OPT-HT + OPT-IP9K, 단가 37,300원",
     "approval_items": ["고객 요구 보증 5년 15만km", "시작품 500개 대체 칩 적용"],
 }
@@ -100,7 +100,7 @@ def test_approval_then_register():
 def test_no_register_when_stock_worse():
     async def run():
         worse = copy.deepcopy(ATP_SAMPLE)
-        worse["parts"][0].update(available=1200, shortage=800)  # 승인 때(500)보다 나빠짐
+        worse["parts"][0].update(available=1200, shortage=800)  # SG2 때(1500)보다 줄어듦
         app, cfg, _, fake = await _start(worse)
         done = await app.ainvoke(Command(resume={"approved": True, "approved_by": 2}), cfg)
         assert done["atp_ok"] is False
