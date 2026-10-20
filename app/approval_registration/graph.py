@@ -1,7 +1,7 @@
 """
 approval_registration 서브그래프 (SG4 승인·등록)
 
-흐름: prepare_approval_card -> request_approval(멈춤) -> recheck_atp -> register_quote
+흐름: prepare_approval_card -> request_approval(멈춤) -> recheck_supply -> register_quote
 
 - 승인·반려 기록은 백엔드가 저장한다 (POST /api/quotes/{id}/approvals).
   SG4는 백엔드가 resume 해 줄 때까지 멈춰 있다가, 깨어나면 재확인과 등록만 한다.
@@ -21,14 +21,14 @@ from app.approval_registration.schemas import ApprovalCard, SG4State
 logger = logging.getLogger(__name__)
 
 
-def _parse_resume(resume_value: Any) -> tuple[bool, Optional[int]]:
-    """resume 본문에서 (승인 여부, 승인자 ID)를 읽는다.
+def _parse_resume(resume_value: Any) -> bool:
+    """resume 본문에서 승인 여부를 읽는다. 승인자는 백엔드가 승인 API 로 이미 기록했다.
 
-    TODO: resume 요청 본문 형식 확정. 지금은 {"approved": true, "approved_by": 2} 로 가정한다.
+    TODO: resume 요청 본문 형식 확정. 지금은 {"approved": true} 로 가정한다.
     """
     if isinstance(resume_value, dict):
-        return bool(resume_value.get("approved", True)), resume_value.get("approved_by")
-    return True, None
+        return bool(resume_value.get("approved", True))
+    return True
 
 
 async def prepare_approval_card(state: SG4State) -> dict[str, Any]:
@@ -62,57 +62,50 @@ async def request_approval(state: SG4State) -> dict[str, Any]:
             "card": state.approval_card.model_dump() if state.approval_card else None,
         }
     )
-    approved, approved_by = _parse_resume(resume_value)
-    update: dict[str, Any] = {"approved": approved, "approved_by": approved_by}
-    if approved and approved_by is None:
-        update["error"] = "승인자 정보(approved_by)가 resume 본문에 없습니다"
-    return update
+    return {"approved": _parse_resume(resume_value)}
 
 
-async def recheck_atp(state: SG4State) -> dict[str, Any]:
-    """승인 직후 재고를 다시 조회한다.
+async def recheck_supply(state: SG4State) -> dict[str, Any]:
+    """승인 직후, SG2 가 정한 최종 계획 수량으로 재고를 다시 조회한다.
 
-    SG2 때 확인한 부품별 가용 수량(sg2_available)과 지금 가용 수량을 비교해,
-    줄어든 부품이 있으면 등록하지 않는다. (정답 파일 7_sg4_register.json 의 recheck 방식)
-    대체 부품이 충분한지는 SG2 가 계획을 세울 때 판단한 일이라 SG4 는 보지 않는다.
-    ATP 응답에 없는 부품은 비교하지 않는다.
+    계획한 수량이 지금도 가용 재고 안에 있으면(상태 OK) 통과한다.
+    대체 부품도 계획에 들어 있으면 일반 부품처럼 함께 확인한다.
+    응답에 빠진 부품이 있으면 확인하지 못한 것이므로 실패로 본다.
     """
-    atp = await tools.business_get_atp(state.model_id, state.options, state.qty, state.due_date)
-    now = {p.part_id: p.available for p in atp.parts}
-    worse = [
-        (e.part_id, e.available_at_sg2, now[e.part_id])
-        for e in state.sg2_available
-        if e.part_id in now and now[e.part_id] < e.available_at_sg2
+    plan = [{"part_id": pid, "required_qty": qty} for pid, qty in state.final_plan.items()]
+    supply = await tools.business_check_parts_supply(state.due_date, plan, state.base_date)
+    returned = {p.part_id: p for p in supply.parts}
+    problems = [
+        f"{pid} 확인 불가" for pid in state.final_plan if pid not in returned
+    ] + [
+        f"{p.part_id} 필요 {p.required_qty} / 가용 {p.available}"
+        for p in supply.parts
+        if p.status == "SHORT" or p.short_qty > 0
     ]
-    update: dict[str, Any] = {"atp": atp, "atp_ok": not worse}
-    if worse:
-        # TODO: 재고가 줄었을 때 처리 방식 확정 (지금은 사유만 남기고 종료)
-        update["error"] = "재고 변동: " + ", ".join(
-            f"{pid} 가용 {before} -> {after}" for pid, before, after in worse
-        )
+    update: dict[str, Any] = {"supply": supply, "recheck_ok": not problems}
+    if problems:
+        # TODO: 재고가 부족해졌을 때 처리 방식 확정 (지금은 사유만 남기고 종료)
+        update["error"] = "재고 변동: " + ", ".join(problems)
         logger.warning("SG4 재고 재확인 실패 thread_id=%s %s", state.thread_id, update["error"])
     return update
 
 
 async def register_quote(state: SG4State) -> dict[str, Any]:
-    """견적을 등록한다. 성공하면 그래프가 끝나고 DONE 이벤트가 나간다."""
-    # TODO: 멱등 키 형식 확정 (같은 견적이면 항상 같은 값이어야 재시도가 안전하다)
-    idempotency_key = f"{state.thread_id}:register_quote:{state.quote_id}"
-    result = await tools.business_register_quote(
-        state.quote_id,
-        state.approved_by,
-        thread_id=state.thread_id,
-        idempotency_key=idempotency_key,
-    )
+    """견적을 등록한다. 성공하면 그래프가 끝나고 DONE 이벤트가 나간다.
+
+    승인 여부는 백엔드가 확인한다(승인되지 않은 견적이면 409). 중복 등록 방지 키는
+    business-mcp 서버가 붙인다.
+    """
+    result = await tools.business_register_quote(state.quote_id, state.thread_id)
     return {"registered_quote_id": result.quote_id, "registration_status": result.status}
 
 
 def _after_approval(state: SG4State) -> str:
-    return "recheck_atp" if state.approved and state.error is None else END
+    return "recheck_supply" if state.approved else END
 
 
 def _after_recheck(state: SG4State) -> str:
-    return "register_quote" if state.atp_ok else END
+    return "register_quote" if state.recheck_ok else END
 
 
 def build_graph() -> StateGraph:
@@ -120,12 +113,12 @@ def build_graph() -> StateGraph:
     graph = StateGraph(SG4State)
     graph.add_node("prepare_approval_card", prepare_approval_card)
     graph.add_node("request_approval", request_approval)
-    graph.add_node("recheck_atp", recheck_atp)
+    graph.add_node("recheck_supply", recheck_supply)
     graph.add_node("register_quote", register_quote)
 
     graph.add_edge(START, "prepare_approval_card")
     graph.add_edge("prepare_approval_card", "request_approval")
-    graph.add_conditional_edges("request_approval", _after_approval, ["recheck_atp", END])
-    graph.add_conditional_edges("recheck_atp", _after_recheck, ["register_quote", END])
+    graph.add_conditional_edges("request_approval", _after_approval, ["recheck_supply", END])
+    graph.add_conditional_edges("recheck_supply", _after_recheck, ["register_quote", END])
     graph.add_edge("register_quote", END)
     return graph

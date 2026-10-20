@@ -3,7 +3,9 @@ approval_registration 도메인의 MCP 도구 호출 (business-mcp, rag-mcp).
 
 - 서버 주소: 설정(BUSINESS_MCP_URL, RAG_MCP_URL). 전송 방식은 Streamable HTTP.
 - 인증: 모든 요청에 X-Internal-Api-Key 헤더(설정 INTERNAL_API_KEY). 없거나 틀리면 401.
-- 쓰기 도구(business_register_quote)는 thread_id 와 Idempotency-Key 헤더로 중복 반영을 막는다.
+- 도구 이름은 서버가 정한 이름 그대로 부른다 (check_parts_supply 등). business_ 접두어는 Agent 쪽
+  MCP 클라이언트가 붙이는 이름이라 여기서는 쓰지 않는다.
+- 중복 등록 방지(Idempotency-Key)는 business-mcp 서버가 백엔드로 보낼 때 붙인다. 이쪽은 보내지 않는다.
 - 서버 오류(429·503)는 2회까지 다시 시도하고, 입력 오류(도구가 isError 로 답함)는 바로 실패한다.
 """
 import asyncio
@@ -12,7 +14,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, Optional, Union
 
-from app.approval_registration.schemas import AtpResult, DocHit, RegisterResult
+from app.approval_registration.schemas import DocHit, RegisterResult, SupplyResult
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -25,20 +27,12 @@ class ToolError(Exception):
     """MCP 도구가 입력 오류 등으로 실패했다고 답했을 때. 다시 시도해도 같은 결과라 재시도하지 않는다."""
 
 
-def _server_url(name: str) -> str:
-    """도구 이름으로 어느 MCP 서버를 부를지 정한다."""
-    return settings.RAG_MCP_URL if name.startswith("rag_") else settings.BUSINESS_MCP_URL
+def _server_url(server: str) -> str:
+    return settings.RAG_MCP_URL if server == "rag" else settings.BUSINESS_MCP_URL
 
 
-def _build_headers(
-    thread_id: Optional[str], idempotency_key: Optional[str]
-) -> dict[str, str]:
-    headers = {"X-Internal-Api-Key": settings.INTERNAL_API_KEY}
-    if thread_id:
-        headers["X-Thread-Id"] = thread_id  # TODO: 헤더 이름은 백엔드와 확정
-    if idempotency_key:
-        headers["Idempotency-Key"] = idempotency_key
-    return headers
+def _build_headers() -> dict[str, str]:
+    return {"X-Internal-Api-Key": settings.INTERNAL_API_KEY}
 
 
 def _parse_result(result: Any) -> Any:
@@ -84,29 +78,23 @@ async def _open_transport(url: str, headers: dict[str, str]):
 
 
 async def _call_once(
-    name: str, arguments: dict[str, Any], headers: dict[str, str]
+    server: str, name: str, arguments: dict[str, Any], headers: dict[str, str]
 ) -> Any:
     # MCP SDK 는 호출할 때만 불러온다 (설치 전에도 나머지 코드와 테스트가 돌아가도록)
     from mcp import ClientSession
 
-    async with _open_transport(_server_url(name), headers) as (read, write):
+    async with _open_transport(_server_url(server), headers) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             return _parse_result(await session.call_tool(name, arguments))
 
 
-async def _call_tool(
-    name: str,
-    arguments: dict[str, Any],
-    *,
-    thread_id: Optional[str] = None,
-    idempotency_key: Optional[str] = None,
-) -> Any:
-    """MCP 도구를 호출하고 JSON 응답을 돌려준다."""
-    headers = _build_headers(thread_id, idempotency_key)
+async def _call_tool(server: str, name: str, arguments: dict[str, Any]) -> Any:
+    """MCP 도구를 호출하고 JSON 응답을 돌려준다. server 는 "business" 또는 "rag"."""
+    headers = _build_headers()
     for attempt in range(_MAX_RETRY + 1):
         try:
-            return await _call_once(name, arguments, headers)
+            return await _call_once(server, name, arguments, headers)
         except ToolError:
             raise
         except Exception as exc:  # noqa: BLE001 - 재시도 대상인지 아래에서 가린다
@@ -117,30 +105,21 @@ async def _call_tool(
             raise
 
 
-async def business_get_atp(
-    model_id: str, options: list[str], qty: int, due_date: str
-) -> AtpResult:
-    """POST /internal/atp - 모델·옵션 기준 BOM 부품의 가용 재고와 부족분."""
-    raw = await _call_tool(
-        "business_get_atp",
-        {"model_id": model_id, "options": options, "qty": qty, "due_date": due_date},
-    )
-    return AtpResult.model_validate(raw)
+async def business_check_parts_supply(
+    due_date: str, parts: list[dict[str, Any]], base_date: Optional[str] = None
+) -> SupplyResult:
+    """부품별 재고 충분 여부. 승인 후 재확인에서 SG2 의 최종 계획 수량으로 호출한다."""
+    arguments: dict[str, Any] = {"due_date": due_date, "parts": parts}
+    if base_date:
+        arguments["base_date"] = base_date
+    raw = await _call_tool("business", "check_parts_supply", arguments)
+    return SupplyResult.model_validate(raw)
 
 
-async def business_register_quote(
-    quote_id: Union[int, str],
-    approved_by: int,
-    *,
-    thread_id: str,
-    idempotency_key: str,
-) -> RegisterResult:
-    """POST /internal/quotes/{id}/register - 사람 승인과 ATP 재확인을 통과한 뒤에만 호출한다."""
+async def business_register_quote(quote_id: Union[int, str], thread_id: str) -> RegisterResult:
+    """승인된 견적을 등록한다. 되돌리기 어려워 사람 승인과 재고 재확인을 통과한 뒤에만 호출한다."""
     raw = await _call_tool(
-        "business_register_quote",
-        {"quote_id": quote_id, "approved_by": approved_by},
-        thread_id=thread_id,
-        idempotency_key=idempotency_key,
+        "business", "register_quote", {"quote_id": quote_id, "thread_id": thread_id}
     )
     return RegisterResult.model_validate(raw)
 
@@ -148,9 +127,12 @@ async def business_register_quote(
 async def rag_search_docs(
     query: str, doc_type: Optional[str] = None, k: int = 4
 ) -> list[DocHit]:
-    """VectorDB doc_chunks 조회 (bge-m3). SG4에서는 승인 안내용 규정 근거를 찾는다."""
+    """VectorDB doc_chunks 조회 (rag-mcp search_docs). SG4에서는 승인 안내용 규정 근거를 찾는다.
+
+    TODO: rag-mcp 레포가 비어 있어 도구 이름·입출력은 명세 예시 기준. 올라오면 확인.
+    """
     arguments: dict[str, Any] = {"query": query, "k": k}
     if doc_type:
         arguments["doc_type"] = doc_type
-    raw = await _call_tool("rag_search_docs", arguments)
+    raw = await _call_tool("rag", "search_docs", arguments)
     return [DocHit.model_validate(item) for item in raw]
