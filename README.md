@@ -17,8 +17,8 @@ cp env.example .env
 
 ## 로컬 인프라 연결 설정
 
-Business MCP와 RAG MCP를 통한 데이터 조회를 위해 접속 주소만 설정해 둔 상태입니다.
-실제 API·MCP 호출 연동은 추후 구현하며, 접속 설정은 `env.example`에 정리되어 있습니다.
+접속 설정은 `env.example`에 정리되어 있습니다. Business MCP는 아래 "business-mcp 연결"대로 연결되어 있고,
+RAG MCP는 서버가 준비되면 같은 공통 클라이언트에 추가합니다. RabbitMQ는 접속 설정만 준비된 상태입니다.
 
 | 대상 | 설정 | 사용 방식 |
 | --- | --- | --- |
@@ -32,6 +32,23 @@ Business MCP와 RAG MCP를 통한 데이터 조회를 위해 접속 주소만 �
 Spring Boot 내부 API를 직접 호출해야 할 때는 `app.core.http_client`의 `get_internal_api_client()`를 `async with`로 열고,
 `client.get("/internal/...")`처럼 실제 백엔드 경로를 전달합니다. `X-Internal-Api-Key`가 자동으로 설정되며 사용 후 클라이언트가 닫힙니다.
 이 클라이언트는 설정된 백엔드의 `/internal/**` 경로만 허용하고 리다이렉트는 자동으로 따라가지 않습니다.
+
+## business-mcp 연결
+
+`app/core/mcp_client.py`가 business-mcp(`BUSINESS_MCP_URL`)에 MCP로 연결합니다.
+처음 쓰는 경우 **[MCP_GUIDE.md](MCP_GUIDE.md)** 를 먼저 보세요 (준비, 사용법, Tool 목록, 오류 처리, 자주 겪는 문제).
+`.env`의 `BUSINESS_MCP_API_KEY`는 business-mcp의 `INTERNAL_API_KEY`와 같은 값이어야 합니다 (요청 헤더 `X-Internal-Api-Key`).
+
+| 함수 | 용도 |
+| --- | --- |
+| `get_business_tools()` | LLM에 `bind_tools`로 넘길 Tool. 이름에 `business_` 접두어 (예: `business_get_bom`) |
+| `call_business_tool("get_bom", {...})` | 코드에서 직접 호출. 결과 JSON을 dict로 반환하고, Tool 오류면 `McpToolError` |
+
+연결 확인 (business-mcp 서버를 먼저 실행):
+
+```bash
+LIVE_MCP=true .venv/bin/python -m pytest tests/core/test_business_mcp_live.py -v
+```
 
 ## Swagger 문서 작성 기준
 
