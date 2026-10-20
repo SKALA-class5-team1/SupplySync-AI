@@ -1,13 +1,13 @@
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
+fastapi==0.150.0
+uvicorn[standard]==0.54.0
 pydantic==2.14.1
-pydantic-settings==2.1.0
+pydantic-settings==2.15.0
 
 cryptography==41.0.7
 
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
-python-multipart==0.0.6
+python-multipart==0.0.32
 
 python-dotenv==1.0.0
 
@@ -23,6 +23,8 @@ minio==7.2.0
 langgraph==1.2.16
 langchain-core==1.6.12
 langchain-openai==1.7.2
+mcp==1.30.0
+langchain-mcp-adapters==0.3.1
 pyyaml==6.0.3
 
 # Test
