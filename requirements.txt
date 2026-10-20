@@ -1,6 +1,6 @@
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-pydantic==2.5.0
+pydantic==2.14.1
 pydantic-settings==2.1.0
 
 cryptography==41.0.7
@@ -18,3 +18,12 @@ httpx==0.28.1
 
 # MinIO storage
 minio==7.2.0
+
+# LangGraph + MCP
+langgraph==1.2.16
+langchain-core==1.6.12
+langchain-openai==1.7.2
+pyyaml==6.0.3
+
+# Test
+pytest==9.1.1
