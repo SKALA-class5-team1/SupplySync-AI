@@ -13,7 +13,25 @@ cp env.example .env
 프로젝트 가상환경에 `requirements.txt`의 패키지가 설치되어 있어야 합니다.
 기본 주소는 `http://127.0.0.1:8000`, Swagger UI는 `/docs`입니다.
 설정 우선순위는 환경 변수 > `.env` > 기본값입니다. `DEBUG`와 `RELOAD`는 `true`/`false`, `CORS_ORIGINS`는 JSON 배열로 작성하세요.
-로그는 콘솔에만 출력하며 DB와 API 키 없이 서버를 시작할 수 있습니다.
+로그는 콘솔에만 출력하며 MCP 서버에 연결하지 않아도 AI 서버 자체를 시작할 수 있습니다.
+
+## 로컬 인프라 연결 설정
+
+Business MCP와 RAG MCP를 통한 데이터 조회를 위해 접속 주소만 설정해 둔 상태입니다.
+실제 API·MCP 호출 연동은 추후 구현하며, 접속 설정은 `env.example`에 정리되어 있습니다.
+
+| 대상 | 설정 | 사용 방식 |
+| --- | --- | --- |
+| FastAPI | `HOST`, `PORT` | 기본 `127.0.0.1:8000`에서 AI 서버 실행 |
+| Business MCP | `BUSINESS_MCP_URL` | `http://127.0.0.1:8101/mcp` |
+| RAG MCP | `RAG_MCP_URL` | `http://127.0.0.1:8102/mcp` |
+| RAG API 문서 | `RAG_API_DOCS_URL` | `http://127.0.0.1:8102/docs` (문서 확인용) |
+| RabbitMQ | `RABBITMQ_HOST`, `RABBITMQ_AMQP_PORT`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD` | 접속 설정만 준비. 발행·소비 코드는 큐와 메시지 규격 확정 후 구현 |
+| Spring Boot (선택) | `SERVER_PORT`, `INTERNAL_API_KEY` | 기존 내부 HTTP API 유틸리티용. MCP 인증과 별개 |
+
+Spring Boot 내부 API를 직접 호출해야 할 때는 `app.core.http_client`의 `get_internal_api_client()`를 `async with`로 열고,
+`client.get("/internal/...")`처럼 실제 백엔드 경로를 전달합니다. `X-Internal-Api-Key`가 자동으로 설정되며 사용 후 클라이언트가 닫힙니다.
+이 클라이언트는 설정된 백엔드의 `/internal/**` 경로만 허용하고 리다이렉트는 자동으로 따라가지 않습니다.
 
 ## Swagger 문서 작성 기준
 

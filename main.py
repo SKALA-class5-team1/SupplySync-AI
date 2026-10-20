@@ -130,7 +130,7 @@ def health_check() -> HealthCheckResponse:
     - **성공 응답**: `200 OK`. `status`는 `healthy`,
       `environment`는 현재 실행 환경입니다.
 
-    DB, 외부 API, AI 모델의 연결 상태는 검사하지 않으므로,
+    MCP 서버, 외부 API, AI 모델의 연결 상태는 검사하지 않으므로,
     이 응답만으로 전체 업무 기능의 준비 상태(readiness)를 판단할 수 없습니다.
     서버가 응답할 수 없는 경우에는 이 API의 JSON 응답 자체를 받지 못할 수 있습니다.
     """

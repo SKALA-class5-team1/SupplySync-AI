@@ -39,11 +39,28 @@ class Settings(BaseSettings):
     ]
     OPENAI_API_KEY: str = Field(default="", repr=False)
 
-    # 선택 기능: database.py, security.py가 사용하는 설정입니다.
-    # 이 값들을 정의해도 앱 시작 시 DB 연결이나 인증을 실행하지 않습니다.
-    DB_URL: str = "postgresql+psycopg2://postgres:postgres@localhost:5432/supplysync"
-    DB_POOL_SIZE: int = 5
-    DB_MAX_OVERFLOW: int = 10
+    # MCP 접속 주소만 설정합니다. 실제 도구 호출은 추후 구현합니다.
+    BUSINESS_MCP_URL: str = "http://127.0.0.1:8101/mcp"
+    RAG_MCP_URL: str = "http://127.0.0.1:8102/mcp"
+    RAG_API_DOCS_URL: str = "http://127.0.0.1:8102/docs"
+
+    # RabbitMQ: 메시지 발행/소비용 AMQP 연결 설정입니다.
+    # RABBITMQ_MGMT_PORT는 관리 화면용이므로 앱 연결에는 사용하지 않습니다.
+    RABBITMQ_HOST: str = "localhost"
+    RABBITMQ_AMQP_PORT: int = Field(default=5672, ge=1, le=65535)
+    RABBITMQ_USER: str = "supplysync"
+    RABBITMQ_PASSWORD: str = Field(default="changeme", repr=False)
+
+    # Spring Boot 내부 API. FastAPI의 PORT(8000)와 구분합니다.
+    SERVER_PORT: int = Field(default=8080, ge=1, le=65535)
+    INTERNAL_API_KEY: str = Field(default="changeme-internal-key", repr=False)
+
+    @property
+    def BACKEND_BASE_URL(self) -> str:
+        """로컬 Spring Boot 백엔드 주소."""
+        return f"http://localhost:{self.SERVER_PORT}"
+
+    # 선택: AI 서버 자체의 JWT 인증을 구현할 때 사용합니다.
     SECRET_KEY: str = Field(default="local-secret-key-for-development-only", repr=False)
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60

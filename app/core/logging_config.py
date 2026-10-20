@@ -29,7 +29,6 @@ def setup_logging():
     # 외부 라이브러리 로그 레벨 조정
     logging.getLogger("uvicorn").setLevel(logging.INFO)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
     logging.getLogger("elasticsearch").setLevel(logging.WARNING)
     
     return root_logger
