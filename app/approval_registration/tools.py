@@ -53,6 +53,17 @@ def _parse_result(result: Any) -> Any:
     raise ToolError("MCP 도구 응답이 비어 있습니다")
 
 
+def _find_tool_error(exc: BaseException) -> Optional[ToolError]:
+    """anyio 가 예외를 ExceptionGroup 으로 감싸 올리므로, 안쪽의 ToolError 를 찾아 꺼낸다."""
+    if isinstance(exc, ToolError):
+        return exc
+    for inner in getattr(exc, "exceptions", ()):
+        found = _find_tool_error(inner)
+        if found:
+            return found
+    return None
+
+
 def _is_retryable(exc: BaseException) -> bool:
     """HTTP 429·503 이면 True. anyio 가 예외를 묶어 올리는 경우도 안쪽까지 본다."""
     status = getattr(getattr(exc, "response", None), "status_code", None)
@@ -95,9 +106,10 @@ async def _call_tool(server: str, name: str, arguments: dict[str, Any]) -> Any:
     for attempt in range(_MAX_RETRY + 1):
         try:
             return await _call_once(server, name, arguments, headers)
-        except ToolError:
-            raise
         except Exception as exc:  # noqa: BLE001 - 재시도 대상인지 아래에서 가린다
+            tool_error = _find_tool_error(exc)
+            if tool_error is not None:
+                raise tool_error from None  # 도구가 오류로 답한 것 - 다시 시도해도 같다
             if attempt < _MAX_RETRY and _is_retryable(exc):
                 logger.warning("MCP %s 재시도 %d/%d", name, attempt + 1, _MAX_RETRY)
                 await asyncio.sleep(0.5 * (attempt + 1))
