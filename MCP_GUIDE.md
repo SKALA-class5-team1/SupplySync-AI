@@ -52,10 +52,10 @@ rag-mcp도 서버가 준비되면 같은 파일에 `"rag"` 서버로 추가한�
 ### 3-2. `.env` 설정 (SupplySync-AI 폴더)
 ```
 BUSINESS_MCP_URL=http://127.0.0.1:8101/mcp
-BUSINESS_MCP_API_KEY=<business-mcp의 INTERNAL_API_KEY와 같은 값>
+INTERNAL_API_KEY=<팀 공용 내부 호출 키>
 ```
 - URL은 **`/mcp`까지 포함**한다. 코드에서 `/mcp`를 또 붙이지 않는다.
-- 키 값은 팀에서 따로 공유받는다. Git·메신저 공개 채널에 올리지 않는다.
+- `INTERNAL_API_KEY`는 AI 서버·business-mcp·백엔드가 **같은 값 하나**를 공유한다 (내부 호출 공용 키). 키 값은 팀에서 따로 공유받는다. Git·메신저 공개 채널에 올리지 않는다.
 
 ### 3-3. business-mcp 서버 실행 (SupplySync-Business-MCP 폴더)
 ```bash
@@ -199,8 +199,8 @@ business-mcp는 [MCP 공식 명세](https://modelcontextprotocol.io/specificatio
 | 증상 | 원인 | 해결 |
 |---|---|---|
 | `Connection refused` / 연결 실패 | business-mcp 서버가 꺼져 있음 | 3-3대로 서버 실행 |
-| `RuntimeError: .env의 BUSINESS_MCP_API_KEY가 비어 있습니다` | `.env`에 키를 넣지 않음 | 3-2대로 키 설정 |
-| `401 Unauthorized` | `BUSINESS_MCP_API_KEY`가 서버의 `INTERNAL_API_KEY`와 다름, 또는 키를 바꾼 뒤 서버를 재시작하지 않음 | 값 확인 후 business-mcp 재시작 |
+| `RuntimeError: .env의 INTERNAL_API_KEY가 설정되지 않았습니다` | `.env`에 키가 없거나 예시 값(`changeme-internal-key`) 그대로 | 3-2대로 키 설정 |
+| `401 Unauthorized` | `INTERNAL_API_KEY`가 business-mcp의 `INTERNAL_API_KEY`와 다름, 또는 키를 바꾼 뒤 서버를 재시작하지 않음 | 값 확인 후 business-mcp 재시작 |
 | `404` 또는 Tool 목록이 안 옴 | URL에 `/mcp`가 빠졌거나 `/mcp/mcp`로 두 번 붙음 | `BUSINESS_MCP_URL=http://127.0.0.1:8101/mcp` 그대로 쓰고 코드에서 덧붙이지 않기 |
 | `McpToolError: … 백엔드 오류` | 백엔드 Tool인데 Spring 백엔드가 없음 | 정상. 백엔드 API 준비 후 동작 |
 | `KeyError: 'business_get_bom'` | 사용법 A/B 이름을 섞어 씀 | A(`call_business_tool`)는 접두어 없이, B(`get_business_tools`)는 `business_` 붙여서 |
@@ -209,7 +209,7 @@ business-mcp는 [MCP 공식 명세](https://modelcontextprotocol.io/specificatio
 
 ## 9. 체크리스트
 
-- [ ] `.env`에 `BUSINESS_MCP_URL`, `BUSINESS_MCP_API_KEY` 설정
+- [ ] `.env`에 `BUSINESS_MCP_URL`, `INTERNAL_API_KEY` 설정
 - [ ] business-mcp 서버 실행 후 `LIVE_MCP=true … test_business_mcp_live.py` 통과
 - [ ] 클라이언트를 새로 만들지 않고 `app.core.mcp_client`에서 import
 - [ ] 계산에 쓰는 값은 `call_business_tool` (사용법 A)

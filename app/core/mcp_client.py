@@ -24,7 +24,7 @@ mcp_client = MultiServerMCPClient(
         BUSINESS: {
             "transport": "streamable_http",
             "url": settings.BUSINESS_MCP_URL,
-            "headers": {"X-Internal-Api-Key": settings.BUSINESS_MCP_API_KEY},
+            "headers": {"X-Internal-Api-Key": settings.INTERNAL_API_KEY},
         },
     },
     tool_name_prefix=True,
@@ -36,9 +36,9 @@ class McpToolError(Exception):
 
 
 def _require_api_key() -> None:
-    # 키가 비어 있으면 서버가 원인을 알기 어려운 401로 끊으므로, 호출 전에 바로 알려준다
-    if not settings.BUSINESS_MCP_API_KEY:
-        raise RuntimeError(".env의 BUSINESS_MCP_API_KEY가 비어 있습니다. business-mcp의 INTERNAL_API_KEY와 같은 값을 넣으세요.")
+    # 키가 비어 있거나 예시 값 그대로면 서버가 원인을 알기 어려운 401로 끊으므로, 호출 전에 바로 알려준다
+    if settings.INTERNAL_API_KEY in ("", "changeme-internal-key"):
+        raise RuntimeError(".env의 INTERNAL_API_KEY가 설정되지 않았습니다. business-mcp의 INTERNAL_API_KEY와 같은 값을 넣으세요.")
 
 
 async def get_business_tools() -> dict[str, BaseTool]:
