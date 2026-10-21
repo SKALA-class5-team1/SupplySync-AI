@@ -31,6 +31,7 @@ class SupervisorState(BaseModel):
     rfq_number: str = Field(default="", examples=["HB-EV7-EWP-001"])
 
     # --- SG1 이 채우는 값 (SG3 입력). 이름·타입은 SG1State(app/rfq_review/state.py)와 같다 ---
+    review_id: Optional[int] = None
     parsed_rfq: dict[str, Any] = Field(default_factory=dict)
     selected_model: Optional[str] = None
     options: list[str] = Field(default_factory=list)
@@ -39,6 +40,8 @@ class SupervisorState(BaseModel):
     demand: dict[str, Any] = Field(default_factory=dict)
 
     # --- SG2 가 채우는 값 ---
+    supply_analysis: dict[str, Any] = Field(default_factory=dict, description="SG3 입력. 어댑터가 SG2 결과를 SG3 모양으로 바꾼 값")
+    issue_date: Optional[str] = None  # SG3 발행일. 없으면 SG3 가 오늘 날짜를 쓴다
     final_plan: dict[str, int] = Field(default_factory=dict)
     due_date: Optional[str] = None
     base_date: Optional[str] = None
@@ -48,7 +51,7 @@ class SupervisorState(BaseModel):
     quote_summary: str = ""
     approval_items: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
-    sg3_outcome: Optional[Literal["DRAFT_SAVED", "FAILED", "SAVE_UNCONFIRMED"]] = Field(
+    sg3_outcome: Optional[Literal["DRAFT_SAVED", "FAILED", "SAVE_UNCONFIRMED", "REJECTED"]] = Field(
         default=None, description="SG3 결과. DRAFT_SAVED 일 때만 SG4 로 간다"
     )
     draft_revision: int = 1  # SG3 가 이번에 저장할 견적 revision. 수정 요청 때 prepare_rewrite 가 +1 한다
@@ -145,12 +148,16 @@ def _after_sg4(state: SupervisorState) -> str:
     return END
 
 
-def build_supervisor_graph() -> StateGraph:
-    """상위 그래프를 만든다. 호출하는 쪽에서 checkpointer 를 붙여 compile 한다."""
+def build_supervisor_graph(sg1: Any = None, sg2: Any = None, sg3: Any = None) -> StateGraph:
+    """상위 그래프를 만든다. 호출하는 쪽에서 checkpointer 를 붙여 compile 한다.
+
+    sg1/sg2/sg3 에 실제 노드(컴파일된 서브그래프 또는 async 함수)를 넘기면 임시 노드 대신 쓴다.
+    넘기지 않은 자리는 임시 노드가 남는다. 실제 노드를 한꺼번에 붙이려면 build_connected_supervisor_graph().
+    """
     graph = StateGraph(SupervisorState)
-    graph.add_node("sg1_rfq_review", sg1_rfq_review)
-    graph.add_node("sg2_supply_analysis", sg2_supply_analysis)
-    graph.add_node("sg3_quote_drafting", sg3_quote_drafting)
+    graph.add_node("sg1_rfq_review", sg1 or sg1_rfq_review)
+    graph.add_node("sg2_supply_analysis", sg2 or sg2_supply_analysis)
+    graph.add_node("sg3_quote_drafting", sg3 or sg3_quote_drafting)
     graph.add_node("prepare_rewrite", prepare_rewrite)
     graph.add_node("sg4_approval_registration", build_sg4_graph().compile())
 
@@ -165,3 +172,11 @@ def build_supervisor_graph() -> StateGraph:
     )
     graph.add_edge("prepare_rewrite", "sg3_quote_drafting")
     return graph
+
+
+def build_connected_supervisor_graph(bom_loader: Any = None) -> StateGraph:
+    """실제 SG1·SG2·SG3 를 붙인 상위 그래프. 아직 불러올 수 없는 SG 는 임시 노드로 남고 경고 로그를 남긴다."""
+    from app.supervisor.real_nodes import load_real_nodes
+
+    nodes = load_real_nodes(bom_loader)
+    return build_supervisor_graph(**nodes)
