@@ -56,6 +56,7 @@ class McpGateway:
         from langchain_mcp_adapters.sessions import create_session
 
         from app.core.config import settings
+        from app.core.mcp_auth import get_mcp_headers
         from app.core.mcp_client import BUSINESS, mcp_client
 
         if settings.INTERNAL_API_KEY in ("", "changeme-internal-key"):
@@ -73,7 +74,7 @@ class McpGateway:
             connection = {
                 "transport": "streamable_http",
                 "url": settings.RAG_MCP_URL,
-                "headers": {"X-Internal-Api-Key": settings.INTERNAL_API_KEY},
+                "headers": get_mcp_headers(),
             }
             async with create_session(connection) as session:
                 await session.initialize()

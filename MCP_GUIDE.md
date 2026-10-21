@@ -18,7 +18,7 @@ REST API처럼 URL·경로를 하나하나 맞출 필요 없이, 서버가 "내�
    │  call_business_tool("get_bom", {...})        ← 우리가 쓰는 함수
    ▼
 app/core/mcp_client.py  (공통 MCP 클라이언트, 이미 만들어져 있음)
-   │  HTTP + 헤더 X-Internal-Api-Key
+   │  HTTP + 헤더 X-API-Key, X-Internal-Api-Key
    ▼
 business-mcp 서버 (:8101/mcp)   ← DB에 직접 접근하지 않음
    │  HTTP /internal/** + 헤더 X-Internal-Api-Key
@@ -55,9 +55,12 @@ rag-mcp도 서버가 준비되면 같은 파일에 `"rag"` 서버로 추가한�
 ```
 BUSINESS_MCP_URL=http://127.0.0.1:8101/mcp
 INTERNAL_API_KEY=<팀 공용 내부 호출 키>
+# X-API-Key 값이 내부 호출 키와 다를 때 지정. 비우면 INTERNAL_API_KEY 사용
+MCP_API_KEY=
 ```
 - URL은 **`/mcp`까지 포함**한다. 코드에서 `/mcp`를 또 붙이지 않는다.
 - `INTERNAL_API_KEY`는 AI 서버·business-mcp·백엔드가 **같은 값 하나**를 공유한다 (내부 호출 공용 키). 키 값은 팀에서 따로 공유받는다. Git·메신저 공개 채널에 올리지 않는다.
+- Business·RAG MCP 연결은 `app/core/mcp_auth.py`의 공통 헤더를 사용한다. `X-API-Key`에는 `MCP_API_KEY`(생략 시 `INTERNAL_API_KEY`), `X-Internal-Api-Key`에는 `INTERNAL_API_KEY`를 보낸다.
 
 ### 3-3. 백엔드와 business-mcp 서버 실행
 business-mcp는 모든 데이터를 Spring 백엔드에서 가져오므로 **백엔드를 먼저** 띄운다.
@@ -208,7 +211,7 @@ business-mcp는 [MCP 공식 명세](https://modelcontextprotocol.io/specificatio
 |---|---|---|
 | `Connection refused` / 연결 실패 | business-mcp 서버가 꺼져 있음 | 3-3대로 서버 실행 |
 | `RuntimeError: .env의 INTERNAL_API_KEY가 설정되지 않았습니다` | `.env`에 키가 없거나 예시 값(`changeme-internal-key`) 그대로 | 3-2대로 키 설정 |
-| `401 Unauthorized` | `INTERNAL_API_KEY`가 business-mcp의 `INTERNAL_API_KEY`와 다름, 또는 키를 바꾼 뒤 서버를 재시작하지 않음 | 값 확인 후 business-mcp 재시작 |
+| `401 Unauthorized` | `X-API-Key` 또는 `X-Internal-Api-Key`가 MCP 서버에서 요구하는 값과 다름 | `MCP_API_KEY`·`INTERNAL_API_KEY` 설정 확인 |
 | `404` 또는 Tool 목록이 안 옴 | URL에 `/mcp`가 빠졌거나 `/mcp/mcp`로 두 번 붙음 | `BUSINESS_MCP_URL=http://127.0.0.1:8101/mcp` 그대로 쓰고 코드에서 덧붙이지 않기 |
 | `McpToolError: … 백엔드 오류` | 백엔드 Tool인데 Spring 백엔드가 없음 | 정상. 백엔드 API 준비 후 동작 |
 | `KeyError: 'business_get_bom'` | 사용법 A/B 이름을 섞어 씀 | A(`call_business_tool`)는 접두어 없이, B(`get_business_tools`)는 `business_` 붙여서 |

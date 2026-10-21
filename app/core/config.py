@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     BUSINESS_MCP_URL: str = "http://127.0.0.1:8101/mcp"
     RAG_MCP_URL: str = "http://127.0.0.1:8102/mcp"
     RAG_API_DOCS_URL: str = "http://127.0.0.1:8102/docs"
+    # MCP 요청의 X-API-Key. 생략하면 기존 INTERNAL_API_KEY를 사용한다.
+    MCP_API_KEY: str = Field(default="", repr=False)
 
     # RabbitMQ: 메시지 발행/소비용 AMQP 연결 설정입니다.
     # RABBITMQ_MGMT_PORT는 관리 화면용이므로 앱 연결에는 사용하지 않습니다.

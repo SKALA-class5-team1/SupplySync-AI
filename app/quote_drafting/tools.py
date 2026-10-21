@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.core.guardrails import mask_any, mask_pii, truncate_any, truncate_text
+from app.core.mcp_auth import get_mcp_headers
 from app.core.mcp_client import BUSINESS, mcp_client
 from app.quote_drafting.harness import (
     MAX_RETRY,
@@ -39,7 +40,7 @@ _rag_client = MultiServerMCPClient(
         RAG: {
             "transport": "streamable_http",
             "url": settings.RAG_MCP_URL,
-            "headers": {"X-Internal-Api-Key": settings.INTERNAL_API_KEY},
+            "headers": get_mcp_headers(),
         },
     }
 )

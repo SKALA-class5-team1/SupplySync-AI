@@ -37,7 +37,9 @@ Spring Boot 내부 API를 직접 호출해야 할 때는 `app.core.http_client`�
 
 `app/core/mcp_client.py`가 business-mcp(`BUSINESS_MCP_URL`)에 MCP로 연결합니다.
 처음 쓰는 경우 **[MCP_GUIDE.md](MCP_GUIDE.md)** 를 먼저 보세요 (준비, 사용법, Tool 목록, 오류 처리, 자주 겪는 문제).
-요청 헤더 `X-Internal-Api-Key`에는 `.env`의 `INTERNAL_API_KEY`를 씁니다. business-mcp·백엔드의 `INTERNAL_API_KEY`와 같은 값이어야 합니다.
+SG1~4의 Business·RAG MCP 요청에는 `X-API-Key`와 `X-Internal-Api-Key`를 함께 보냅니다.
+`X-API-Key`는 `.env`의 `MCP_API_KEY`를 사용하며, 비어 있으면 `INTERNAL_API_KEY`를 사용합니다.
+`X-Internal-Api-Key`는 기존 `INTERNAL_API_KEY`를 사용합니다. 헤더 구성은 `app/core/mcp_auth.py`에서 관리합니다.
 
 | 함수 | 용도 |
 | --- | --- |
