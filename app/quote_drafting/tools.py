@@ -17,6 +17,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
+from app.core.guardrails import mask_any, mask_pii, truncate_any, truncate_text
 from app.core.mcp_client import BUSINESS, mcp_client
 from app.quote_drafting.harness import (
     MAX_RETRY,
@@ -26,10 +27,6 @@ from app.quote_drafting.harness import (
     RESULT_MAX_CHARS,
     RETRY_BACKOFF_SEC,
     is_retryable,
-    mask_any,
-    mask_pii,
-    truncate_any,
-    truncate_text,
 )
 from app.quote_drafting.schemas import DocHit, OptionsResult, PartsCostResult, SaveQuoteResult
 

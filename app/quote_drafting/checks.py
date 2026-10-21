@@ -5,10 +5,28 @@ rule 코드·label은 05_expected/6_sg3_quote.json의 checks와 같다.
 """
 from datetime import date, timedelta
 
-from app.quote_drafting.conditions import find_unsupported_numbers
+from app.quote_drafting.conditions import find_unsupported_numbers, format_number
 
 # 문구를 다시 써도 바뀌지 않는 숫자 판정. 실패해도 재작성하지 않고 승인(SG4)에서 판단한다.
 POLICY_RULES = {"PRICE", "ANNUAL_CR", "MARGIN"}
+
+
+def annual_cr_pct(parsed_rfq: dict) -> float:
+    """연간 인하율(%). SG1이 값을 못 찾으면(null) 고객 요구가 없는 것으로 보고 0."""
+    cr = (parsed_rfq.get("commercial") or {}).get("annual_cr_pct")
+    return 0 if cr is None else cr
+
+
+def needs_rewrite(checks: list[dict], conditions: list[dict]) -> list[dict]:
+    """문구를 다시 쓰면 고칠 수 있는 실패만 고른다: 문구 속 숫자 불일치, 빈 문구.
+
+    필수 데이터 누락(FORMAT)이나 숫자 판정(POLICY_RULES)은 문구로 못 고치므로 승인 단계로 넘긴다.
+    """
+    empty_text = any(not c.get("text", "").strip() for c in conditions)
+    return [
+        c for c in checks
+        if c["result"] == "FAIL" and (c["rule"] == "PRICE_RECALC" or (c["rule"] == "FORMAT" and empty_text))
+    ]
 
 # quote_format.required 항목 → quote_draft 필드
 _FORMAT_FIELDS = {
@@ -30,16 +48,21 @@ def _check(rule: str, label: str, criterion: str, value: str, passed: bool, ref:
     return result
 
 
-def check_price(quote: dict, rfq_review: dict) -> dict:
-    target = rfq_review["target_price_krw"]
+def check_price(quote: dict, target: int | None) -> dict:
     unit = quote["unit_price_krw"]
+    if target is None:
+        # SG1이 목표가를 못 찾은 경우. 비교할 수 없어 실패로 두고 승인 단계에서 판단한다.
+        return _check("PRICE", "가격", "단가 ≤ 목표가", f"{unit:,}원 (목표가 없음)", False)
     return _check("PRICE", "가격", f"단가 ≤ 목표가 {target:,}원", f"{unit:,}원", unit <= target)
 
 
 def check_annual_cr(parsed_rfq: dict, rules: dict) -> dict:
     limit = next(l for l in rules["policy_limits"] if l["field"] == "commercial.annual_cr_pct")
-    cr = parsed_rfq["commercial"]["annual_cr_pct"]
-    return _check("ANNUAL_CR", "연간 인하", f"CR ≤ {limit['max']}%", f"{cr}%", cr <= limit["max"], limit["ref"])
+    cr = annual_cr_pct(parsed_rfq)
+    return _check(
+        "ANNUAL_CR", "연간 인하", f"CR ≤ {format_number(limit['max'])}%", f"{format_number(cr)}%",
+        cr <= limit["max"], limit["ref"],
+    )
 
 
 def check_margin(quote: dict, rules: dict) -> dict:
@@ -95,9 +118,11 @@ def check_format(quote: dict, rules: dict) -> dict:
     )
 
 
-def run_checks(quote: dict, condition_facts: list[dict], parsed_rfq: dict, rfq_review: dict, rules: dict) -> list[dict]:
+def run_checks(
+    quote: dict, condition_facts: list[dict], parsed_rfq: dict, target_price_krw: int, rules: dict
+) -> list[dict]:
     return [
-        check_price(quote, rfq_review),
+        check_price(quote, target_price_krw),
         check_annual_cr(parsed_rfq, rules),
         check_margin(quote, rules),
         check_price_recalc(quote, condition_facts),

@@ -6,7 +6,8 @@
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 
-from app.quote_drafting.harness import KEEP_RECENT_MESSAGES, TOKEN_BUDGET, truncate_text
+from app.core.guardrails import truncate_text
+from app.quote_drafting.harness import KEEP_RECENT_MESSAGES, TOKEN_BUDGET
 
 _HEAD = 2  # [SystemMessage(프롬프트), HumanMessage(작업)]
 _SUMMARY_LINE_CHARS = 150

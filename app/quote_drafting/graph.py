@@ -5,28 +5,23 @@ START → prepare_quote ─┬→ agent ⇄ tools ─→ request_save_approval(�
 어느 단계든 한도 초과·실패면 sg3_outcome=FAILED로 END.
 
 호출하는 쪽(상위 그래프)이 checkpointer를 붙여 compile 한다. interrupt는 그 checkpointer로 멈추고,
-같은 thread_id로 Command(resume=...)를 보내면 이어진다. 호출 config는 harness.run_config(thread_id).
+같은 thread_id로 Command(resume=...)를 보내면 이어진다.
+호출 config는 app.core.observability.run_config(thread_id, harness.RUN_NAME). LangSmith 설정은 main.py가 켠다.
 """
-import logging
 from typing import Optional
 
 from langchain_core.runnables import Runnable
 from langgraph.graph import END, START, StateGraph
 
 from app.core.rules import load_rules
-from app.quote_drafting.harness import setup_tracing
 from app.quote_drafting.nodes import QuoteDraftingNodes
 from app.quote_drafting.schemas import SG3State
-
-logger = logging.getLogger(__name__)
 
 
 def build_graph(
     llm: Optional[Runnable] = None, fallback_llm: Optional[Runnable] = None, rules: Optional[dict] = None
 ) -> StateGraph:
     """SG3 그래프를 만든다 (compile 하지 않음). llm·fallback_llm을 안 주면 OpenAI 모델을 처음 쓸 때 만든다."""
-    if setup_tracing():
-        logger.info("SG3 LangSmith 추적 켜짐")
     nodes = QuoteDraftingNodes(rules or load_rules(), llm, fallback_llm)
 
     graph = StateGraph(SG3State)
