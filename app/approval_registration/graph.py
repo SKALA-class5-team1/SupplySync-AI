@@ -29,7 +29,7 @@ APPROVAL_STEP = "SG4.request_approval"  # resume 요청의 step 값 (승인 흐�
 _RESULTS = {"APPROVED", "REJECTED", "REVISE"}
 
 
-def _parse_resume(resume_value: Any) -> dict[str, Any]:
+def _parse_resume(resume_value: Any, quote_id: Any = None) -> dict[str, Any]:
     """resume 본문을 읽는다. 잘못된 입력은 ValueError. 승인으로 짐작하지 않는다.
 
     합의 형식 (승인 흐름 문서 3절):
@@ -37,6 +37,8 @@ def _parse_resume(resume_value: Any) -> dict[str, Any]:
        "decision": {"result": "APPROVED" | "REJECTED" | "REVISE", "reason": "...", "changes": {}}}
     - step 이 지금 대기 중인 단계와 달라도 받지 않는다 (엉뚱한 단계의 응답 방지).
     - REJECTED(최종 반려)·REVISE(수정 요청)에는 reason 이 있어야 한다.
+    - quote_id 가 같이 오면 지금 승인 대기 중인 견적과 같아야 한다 (수정 요청으로 견적이 바뀐 뒤 도착한
+      예전 승인이 새 견적을 승인하는 일 방지). 안 오면 확인하지 않는다. TODO: 백엔드가 quote_id 를 보내기로 합의.
     - 승인자 권한 검사와 기록은 백엔드가 이미 했다. 여기서는 userId 를 남기기만 한다.
     """
     if not isinstance(resume_value, dict):
@@ -46,6 +48,9 @@ def _parse_resume(resume_value: Any) -> dict[str, Any]:
     user_id = resume_value.get("userId")
     if isinstance(user_id, bool) or not isinstance(user_id, (int, str)) or user_id == "":
         raise ValueError("userId 가 필요합니다")
+    sent_quote_id = resume_value.get("quote_id")
+    if sent_quote_id is not None and quote_id is not None and str(sent_quote_id) != str(quote_id):
+        raise ValueError("승인 대상 견적(quote_id)이 지금 승인 대기 중인 견적과 다릅니다")
     decision = resume_value.get("decision")
     if not isinstance(decision, dict):
         raise ValueError("decision 은 객체여야 합니다")
@@ -114,7 +119,7 @@ async def request_approval(state: SG4State) -> dict[str, Any]:
     for _ in range(MAX_INPUT_ATTEMPTS):
         resume_value = interrupt(payload)
         try:
-            decision = _parse_resume(resume_value)
+            decision = _parse_resume(resume_value, state.quote_id)
         except ValueError as exc:
             logger.warning("SG4 잘못된 승인 입력 trace_id=%s: %s", state.thread_id, exc)
             payload = {**payload, "invalid_input": str(exc)}
