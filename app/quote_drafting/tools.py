@@ -132,11 +132,8 @@ async def business_save_quote(payload: dict[str, Any]) -> SaveQuoteResult:
 async def rag_search_docs(
     query: str, doc_type: str = "policy", k: int = RAG_TOP_K, deadline: Optional[float] = None
 ) -> list[DocHit]:
-    """규정 근거 검색. 필요한 필드만, 조각마다 RAG_CHUNK_MAX_CHARS로 잘라 돌려준다.
-
-    TODO: rag-mcp 레포가 비어 있어 도구 이름·입출력은 명세 예시 기준. 올라오면 확인.
-    """
-    raw = await _call_tool(RAG, "search_docs", {"query": query, "doc_type": doc_type, "k": k}, deadline=deadline)
+    """규정 근거 검색. 필요한 필드만, 조각마다 RAG_CHUNK_MAX_CHARS로 잘라 돌려준다."""
+    raw = await _call_tool(RAG, "rag_search_docs", {"query": query, "doc_type": doc_type, "k": k}, deadline=deadline)
     return [DocHit.model_validate(_clean(item, RAG_CHUNK_MAX_CHARS)) for item in raw[:k]]
 
 

@@ -47,6 +47,8 @@ from app.quote_drafting.schemas import (
     SG3State,
 )
 from app.quote_drafting.tools import ConditionText
+from app.supply_analysis.plan import validate_final_plan
+from app.supply_analysis.schemas import SupplyAnalysisResult
 
 logger = logging.getLogger(__name__)
 
@@ -194,8 +196,18 @@ class QuoteDraftingNodes:
             # SG1이 맞는 모델을 고르지 못함 (fit_type 신규 개발 등). 단가를 낼 모델이 없다.
             return _failed(state, "SG1 선정 모델(selected_model)이 없어 견적을 작성할 수 없습니다")
         try:
+            supply = SupplyAnalysisResult.model_validate(state.supply_analysis)
+            validate_final_plan(supply)
+            if state.final_plan != supply.final_plan:
+                raise ValueError("State final_plan과 SG2 저장 계획이 다릅니다")
             option_info = await tools.business_get_options(state.selected_model, deadline=deadline)
             parts = await tools.business_get_parts_cost(state.selected_model, state.options, deadline=deadline)
+            if option_info.model_id != state.selected_model or parts.model_id != state.selected_model or set(parts.options) != set(state.options):
+                raise ValueError("단가·원가 응답의 모델·옵션이 SG1 선정 결과와 다릅니다")
+            original = {part.part_id: part.qty_per_unit for part in supply.bom}
+            cost_parts = {part.part_id: part.qty_per_unit for part in parts.parts_cost_breakdown}
+            if len(parts.parts_cost_breakdown) != len(original) or cost_parts != original:
+                raise ValueError("원가 조회 BOM이 SG2 원 BOM과 다릅니다. 공급 재분석이 필요합니다")
             quote = _assemble_quote(state, option_info, parts, self.rules)
             drafts = build_conditions(
                 state.parsed_rfq, state.assumptions, state.contract_risks, state.supply_analysis, self.rules
@@ -349,6 +361,7 @@ class QuoteDraftingNodes:
             "event": SAVE_APPROVAL_EVENT,  # TODO: SSE로 내보내는 위치(서버 쪽 변환) 확인
             "step": SAVE_APPROVAL_STEP,  # 실행 서비스가 resume 할 때 이 값을 step 으로 보낸다
             "thread_id": state.thread_id,
+            "draft_revision": state.draft_revision,
             "card": card.model_dump(),
         }
         for _ in range(MAX_APPROVAL_INPUTS):
@@ -395,6 +408,8 @@ class QuoteDraftingNodes:
             error = f"견적 저장 응답 없음 - 저장 여부 확인 필요: {describe_error(exc)}"
             logger.error("SG3 SAVE_UNCONFIRMED trace_id=%s %s", state.thread_id, error)
             return {"sg3_outcome": "SAVE_UNCONFIRMED", "error": error}
+        if not result.quote_id or result.status != "DRAFT":
+            return {"sg3_outcome": "SAVE_UNCONFIRMED", "error": "견적 저장 응답의 ID·DRAFT 상태 확인 필요"}
         logger.info(
             "SG3 저장 완료 trace_id=%s quote_id=%s revision=%d", state.thread_id, result.quote_id, state.draft_revision
         )

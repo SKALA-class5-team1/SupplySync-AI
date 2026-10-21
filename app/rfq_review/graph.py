@@ -2,7 +2,7 @@
 SG1 (RFQ·제품 검토) 서브그래프 조립.
 
 parse_rfq → validate_rules
-validate_rules → (미해결 HIGH) human_confirm → validate_rules
+validate_rules → (미해결 HIGH) save_pending_review → human_confirm → validate_rules
 validate_rules → (HIGH 없음) match_spec
 match_spec → (신규 개발) build_report → END
 match_spec → (후보 있음) check_contract → build_report → END
@@ -28,6 +28,7 @@ def build_graph(checkpointer: Any = _DEFAULT):
     graph = StateGraph(SG1State)
     graph.add_node("parse_rfq", nodes.parse_rfq)
     graph.add_node("validate_rules", nodes.validate_rules)
+    graph.add_node("save_pending_review", nodes.save_pending_review)
     graph.add_node("human_confirm", nodes.human_confirm)
     graph.add_node("match_spec", nodes.match_spec)
     graph.add_node("check_contract", nodes.check_contract)
@@ -35,7 +36,8 @@ def build_graph(checkpointer: Any = _DEFAULT):
 
     graph.add_edge(START, "parse_rfq")
     graph.add_edge("parse_rfq", "validate_rules")
-    graph.add_conditional_edges("validate_rules", nodes.route_after_validate, ["human_confirm", "match_spec"])
+    graph.add_conditional_edges("validate_rules", nodes.route_after_validate, ["save_pending_review", "match_spec"])
+    graph.add_edge("save_pending_review", "human_confirm")
     graph.add_edge("human_confirm", "validate_rules")
     graph.add_conditional_edges("match_spec", nodes.route_after_match, ["check_contract", "build_report"])
     graph.add_edge("check_contract", "build_report")

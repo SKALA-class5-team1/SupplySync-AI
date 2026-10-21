@@ -50,7 +50,8 @@ async def _evidence(query: str, doc_type: str, k: int = EVIDENCE_K) -> list[dict
     return _to_evidence(await mcp_tools.search_docs(query, doc_type, k))
 
 
-def _demand(parsed: dict) -> dict:
+def _demand(parsed: dict, assumptions: Optional[list[dict]] = None) -> dict:
+    parsed = rules.effective_rfq(parsed, assumptions or [])
     return {
         "eau": rules.get_path(parsed, "volume.eau"),
         "sample_qty": rules.get_path(parsed, "volume.sample_qty"),
@@ -74,7 +75,7 @@ def _review_payload(state: SG1State, status: str, **values) -> dict:
         "issues": state.get("issues", []),
         "passed_checks": state.get("passed_checks", []),
         "assumptions": state.get("assumptions", []),
-        "demand": _demand(state.get("parsed_rfq", {})),
+        "demand": _demand(state.get("parsed_rfq", {}), state.get("assumptions", [])),
     }
     payload.update(values)
     return {k: v for k, v in payload.items() if v is not None}
@@ -162,17 +163,23 @@ async def validate_rules(state: SG1State) -> dict:
         "passed_checks": passed_checks,
         "normalized_spec": normalized,
         "assumptions": assumptions,
-        "demand": _demand(parsed),
+        "demand": _demand(parsed, assumptions),
     }
 
 
 def route_after_validate(state: SG1State) -> str:
-    return "human_confirm" if rules.has_unresolved_high(state["issues"]) else "match_spec"
+    return "save_pending_review" if rules.has_unresolved_high(state["issues"]) else "match_spec"
 
 
 # ---------------------------------------------------------------------------
 # 3. human_confirm
 # ---------------------------------------------------------------------------
+async def save_pending_review(state: SG1State) -> dict:
+    """interrupt 재개 시 저장을 반복하지 않도록 별도 노드에서 실행한다."""
+    saved = await mcp_tools.save_review(_review_payload(state, "WAITING"))
+    return {"review_id": saved.review_id}
+
+
 async def human_confirm(state: SG1State) -> dict:
     # 미해결 HIGH 전부 + 기본 가정값이 있는 미해결 누락 항목
     pending = [
@@ -181,11 +188,9 @@ async def human_confirm(state: SG1State) -> dict:
         and (i["severity"] == "HIGH" or (i["type"] == "MISSING" and i.get("proposed_value")))
     ]
 
-    # 멈춘 동안 화면에 이슈를 보여주기 위한 저장.
-    # 재개 시 이 노드가 처음부터 다시 실행되어 한 번 더 호출되지만, 백엔드가 (rfq_number, thread_id)로 덮어씁니다.
-    await mcp_tools.save_review(_review_payload(state, "WAITING"))
-
     decision = interrupt({
+        "event": "RFQ_CONFIRMATION_REQUIRED",
+        "step": "SG1.human_confirm",
         "rfq_number": state["rfq_number"],
         "thread_id": state["thread_id"],
         "message": "확인이 필요한 항목이 있습니다. 제안값을 승인하거나 수정해 주세요.",
@@ -322,7 +327,7 @@ async def build_report(state: SG1State) -> dict:
         questions = result.questions
 
     contract_risks = state.get("contract_risks", [])
-    demand = _demand(state["parsed_rfq"])
+    demand = _demand(state["parsed_rfq"], state.get("assumptions", []))
     saved = await mcp_tools.save_review(_review_payload(
         state,
         "DONE",

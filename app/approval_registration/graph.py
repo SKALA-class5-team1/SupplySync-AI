@@ -113,6 +113,7 @@ async def request_approval(state: SG4State) -> dict[str, Any]:
     """
     payload: dict[str, Any] = {
         "event": "APPROVAL_REQUIRED",  # TODO: SSE로 내보내는 위치(서버 쪽 변환) 확인
+        "step": APPROVAL_STEP,
         "thread_id": state.thread_id,
         "card": state.approval_card.model_dump() if state.approval_card else None,
     }
@@ -161,14 +162,27 @@ async def recheck_supply(state: SG4State) -> dict[str, Any]:
     응답에 빠진 부품이 있으면 확인하지 못한 것이므로 실패로 본다.
     """
     plan = [{"part_id": pid, "required_qty": qty} for pid, qty in state.final_plan.items()]
+    if not plan or any(type(qty) is not int or qty <= 0 for qty in state.final_plan.values()):
+        return _failed(state, "재고 재확인 실패", ValueError("양의 정수 수량을 가진 전체 final_plan이 필요합니다"))
     try:
         supply = await tools.business_check_parts_supply(state.due_date, plan, state.base_date)
     except Exception as exc:  # noqa: BLE001 - 재시도 후에도 실패하면 FAILED 로 끝낸다
         return _failed(state, "재고 재확인 실패", exc)
-    returned = {p.part_id: p for p in supply.parts}
+    if (supply.due_date and supply.due_date != state.due_date) or (
+        state.base_date and supply.base_date and supply.base_date != state.base_date
+    ):
+        return _failed(state, "재고 응답 불일치", ValueError("납기·기준일이 재확인 요청과 다릅니다"))
+    returned = {p.part_id: p.required_qty for p in supply.parts}
+    if len(supply.parts) != len(plan) or returned != state.final_plan:
+        mismatched = sorted(pid for pid in state.final_plan.keys() | returned.keys()
+                            if returned.get(pid) != state.final_plan.get(pid))
+        return _failed(state, "재고 응답 불일치", ValueError(
+            "부품 ID·필요 수량이 전체 final_plan과 다릅니다: " + ", ".join(mismatched)
+        ))
+    if any(p.status not in {"OK", "SHORT"} or p.short_qty != max(0, p.required_qty - p.available)
+           or (p.status == "SHORT") != (p.short_qty > 0) for p in supply.parts):
+        return _failed(state, "재고 응답 불일치", ValueError("재고 상태·가용 수량·부족 수량이 일치하지 않습니다"))
     problems = [
-        f"{pid} 확인 불가" for pid in state.final_plan if pid not in returned
-    ] + [
         f"{p.part_id} 필요 {p.required_qty} / 가용 {p.available}"
         for p in supply.parts
         if p.status == "SHORT" or p.short_qty > 0
@@ -176,7 +190,7 @@ async def recheck_supply(state: SG4State) -> dict[str, Any]:
     update: dict[str, Any] = {"supply": supply, "recheck_ok": not problems}
     if problems:
         update["sg4_outcome"] = "STOCK_REVIEW_REQUIRED"
-        # TODO: 재고가 부족해졌을 때 처리 방식 확정 (지금은 사유만 남기고 종료)
+        # 상위 그래프가 SG2 재분석 → SG3 새 견적 → 재승인으로 연결한다.
         update["error"] = "재고 변동: " + ", ".join(problems)
         logger.warning("SG4 재고 재확인 실패 thread_id=%s %s", state.thread_id, update["error"])
     return update
@@ -193,6 +207,8 @@ async def register_quote(state: SG4State) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - 재시도 후에도 실패하면 FAILED 로 끝낸다
         # 응답만 못 받았고 실제로는 등록됐을 수 있다. 다시 시도하지 않고 사람이 확인하게 한다.
         return _failed(state, "견적 등록 실패(등록 여부 확인 필요)", exc)
+    if str(result.quote_id) != str(state.quote_id) or result.status != "REGISTERED":
+        return _failed(state, "견적 등록 여부 확인 필요", ValueError("응답의 견적 ID·등록 상태가 요청과 다릅니다"))
     return {
         "registered_quote_id": result.quote_id,
         "registration_status": result.status,

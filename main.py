@@ -26,6 +26,7 @@ from app.core.schemas import HealthCheckResponse, ServiceInfoResponse
 from app.quote_drafting.router import router as quote_drafting_router
 from app.rfq_review.router import router as rfq_review_router
 from app.supply_analysis.router import router as supply_analysis_router
+from app.supervisor.router import router as supervisor_router
 
 setup_logging()
 setup_tracing()
@@ -71,6 +72,7 @@ app.add_exception_handler(StarletteHTTPException, starlette_http_exception_handl
 app.add_exception_handler(Exception, general_exception_handler)
 
 # SupplySync 도메인 라우터
+app.include_router(supervisor_router, prefix=settings.API_V1_PREFIX, tags=["Workflow"])
 for router, path, tag in (
     (rfq_review_router, "rfq-review", "RFQ Review"),
     (supply_analysis_router, "supply-analysis", "Supply Analysis"),
