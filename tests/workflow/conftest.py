@@ -13,6 +13,7 @@ from app.rfq_review import mcp_tools, nodes
 from app.rfq_review.state import CustomerQuestions, ParsedRFQ
 from app.supply_analysis import deps
 from app.supervisor.graph import build_graph
+from app.supervisor import events
 from app.supervisor.service import WorkflowService
 from tests.quote_drafting.test_graph import FakeMcp
 from tests.supply_analysis.conftest import FakeGateway
@@ -69,6 +70,7 @@ class Environment:
         self.quote_mcp = FakeMcp()
         self.writer = QuoteModel()
         self.calls = []
+        self.events = []
         self.no_models = False
         self.fail_save = False
         self.save_status = "DRAFT"
@@ -136,4 +138,24 @@ def workflow(monkeypatch):
     monkeypatch.setattr(quote_tools, "_call_once", environment.sg3_call)
     monkeypatch.setattr(approval_tools, "_call_tool", environment.sg4_call)
     graph = build_graph(quote_llm=environment.writer, quote_fallback_llm=environment.writer)
-    return WorkflowService(graph), environment
+    service = WorkflowService(graph)
+
+    async def capture_event(task_id, event):
+        environment.events.append(deepcopy(event))
+        environment.calls.append(("EVENT", event["type"], deepcopy(event)))
+        if event["type"] in {"CLARIFICATION_REQUIRED", "APPROVAL_REQUIRED"}:
+            job = await service.get(event["data"]["thread_id"])
+            assert job.waiting_for.id == event["data"]["interrupt_id"]
+            assert job.task_id == task_id
+            if event["type"] == "APPROVAL_REQUIRED":
+                assert job.state["quote_id"] == event["data"]["quote_id"]
+                assert "save_quote" in environment.names("SG3")
+        if event["type"] == "RUN_END" and event["data"]["outcome"] == "REGISTERED":
+            assert environment.names("SG4")[-1] == "register_quote"
+        if event["type"] == "RUN_ON_HOLD" and environment.gateway.calls:
+            name, args = environment.gateway.calls[-1]
+            if event["data"]["final_plan"] == {}:
+                assert name == "business_save_review" and args["final_plan"] == {}
+
+    monkeypatch.setattr(events, "post_once", capture_event)
+    return service, environment

@@ -12,7 +12,9 @@ class SupervisorState(SG1State, total=False):
     error: str | None
     base_date: str | None
     issue_date: str | None
-    rfq_id: str
+    rfq_id: int | str
+    task_id: str
+    request_id: str
     due_date: str
 
     # SG2: 원 BOM과 전체 최종 계획을 별도로 보존한다.

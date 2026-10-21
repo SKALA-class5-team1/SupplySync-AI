@@ -17,6 +17,10 @@ def _hold(reason: str) -> dict:
     return {"status": "ON_HOLD", "next_step": "hold", "error": reason}
 
 
+def _failed(reason: str) -> dict:
+    return {"status": "FAILED", "next_step": "hold", "error": reason}
+
+
 def begin_review(state: SupervisorState) -> dict:
     return {
         "current_stage": "SG1", "status": "ANALYZING", "next_step": "rfq_review",
@@ -28,21 +32,23 @@ def after_review(state: SupervisorState) -> dict:
     if not state.get("selected_model") or state.get("fit_type") == "신규 개발":
         return _hold("SG1에서 공급 분석 가능한 모델을 선정하지 못했습니다. 신규 개발 검토가 필요합니다")
     if not state.get("review_id"):
-        return _hold("SG1 검토 결과 저장을 확인할 수 없습니다")
+        return _failed("SG1 검토 결과 저장을 확인할 수 없습니다")
     return {
-        "rfq_id": state["rfq_number"], "current_stage": "SG2",
+        "current_stage": "SG2",
         "status": "ANALYZING", "next_step": "supply_analysis",
     }
 
 
 def after_supply(state: SupervisorState) -> dict:
+    if state.get("status") == "FAILED":
+        return _failed(state.get("error") or "SG2 처리 실패")
     if not state.get("saved") or state.get("next_step") != "quote_drafting":
         return _hold(state.get("error") or "SG2 공급 계획이 확정되지 않았습니다")
     try:
         supply = SupplyAnalysisResult.model_validate(state)
         validate_final_plan(supply)
     except ValueError as exc:
-        return {**_hold(f"SG2 인계 실패: {exc}"), "final_plan": {}}
+        return {**_failed(f"SG2 인계 실패: {exc}"), "final_plan": {}}
     return {
         "supply_analysis": {**supply.model_dump(mode="json"), "demand": state["demand"]},
         "due_date": state["demand"]["sample_due_date"], "current_stage": "SG3",
@@ -52,7 +58,7 @@ def after_supply(state: SupervisorState) -> dict:
 
 def after_quote(state: SupervisorState) -> dict:
     if state.get("sg3_outcome") != "DRAFT_SAVED" or not state.get("quote_id"):
-        return _hold(state.get("error") or "SG3 견적 저장을 확인할 수 없습니다")
+        return _failed(state.get("error") or "SG3 견적 저장을 확인할 수 없습니다")
     return {
         "current_stage": "SG4", "status": "APPROVING", "next_step": "approval_registration",
         "quote_ids": [*state.get("quote_ids", []), state["quote_id"]],
@@ -66,7 +72,7 @@ def after_approval(state: SupervisorState) -> dict:
     if outcome == "REJECTED":
         return {"status": "REJECTED", "next_step": "done", "error": None}
     if outcome not in {"REWRITE_REQUIRED", "STOCK_REVIEW_REQUIRED"}:
-        return _hold(state.get("error") or f"SG4 처리 중단: {outcome}")
+        return _failed(state.get("error") or f"SG4 처리 중단: {outcome}")
     if state["draft_revision"] >= MAX_REVISION:
         return _hold(f"견적 재작성 한도({MAX_REVISION}차)에 도달했습니다. 담당자 검토가 필요합니다")
     resupply = outcome == "STOCK_REVIEW_REQUIRED"

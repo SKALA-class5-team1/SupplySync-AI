@@ -10,7 +10,7 @@ from app.supply_analysis import deps
 from app.supply_analysis.calc import build_alternatives as calculate_alternatives
 from app.supply_analysis.calc import select_plan, shortages_from
 from app.supply_analysis.mcp_tools import ToolError
-from app.supply_analysis.rules import read_criteria
+from app.supply_analysis.rules import CriteriaError, read_criteria
 from app.supply_analysis.schemas import (
     BomPart, BomResult, DocHit, SG2State, SubstitutesResult,
     SupplyAnalysisResult, SupplyResult,
@@ -26,14 +26,16 @@ def hold(reason: str) -> dict:
     }
 
 
-def hold_on_error(function):
+def fail_on_error(function):
     @wraps(function)
     async def wrapper(state):
         try:
             return await function(state)
+        except CriteriaError as exc:
+            return hold(f"{function.__name__}: {exc}")
         except (ToolError, ValueError) as exc:
             message = str(exc.errors(include_input=False, include_url=False)) if isinstance(exc, ValidationError) else str(exc)
-            result = hold(f"{function.__name__}: {message}")
+            result = {**hold(f"{function.__name__}: {message}"), "status": "FAILED"}
             if function.__name__ == "get_parts":
                 result = {**SupplyAnalysisResult().model_dump(mode="json"), **result}
             return result
@@ -42,7 +44,7 @@ def hold_on_error(function):
 
 
 @traced_node("supply_analysis", "get_parts")
-@hold_on_error
+@fail_on_error
 async def get_parts(state: SG2State) -> dict:
     request = normalize_input(state)
     raw = await deps.gateway().call(
@@ -66,7 +68,7 @@ async def get_parts(state: SG2State) -> dict:
 
 
 @traced_node("supply_analysis", "check_supply")
-@hold_on_error
+@fail_on_error
 async def check_supply(state: SG2State) -> dict:
     request = state["request"]
     arguments = {
@@ -99,7 +101,7 @@ async def check_supply(state: SG2State) -> dict:
 
 
 @traced_node("supply_analysis", "build_alternatives")
-@hold_on_error
+@fail_on_error
 async def build_alternatives(state: SG2State) -> dict:
     request = state["request"]
     supply = SupplyResult.model_validate(state["supply_check"])
@@ -151,7 +153,7 @@ async def build_alternatives(state: SG2State) -> dict:
 
 
 @traced_node("supply_analysis", "recommend")
-@hold_on_error
+@fail_on_error
 async def recommend(state: SG2State) -> dict:
     alternatives, selected = select_plan(
         state["candidates"], [BomPart.model_validate(p) for p in state["bom"]],
@@ -169,12 +171,13 @@ async def recommend(state: SG2State) -> dict:
 
 
 @traced_node("supply_analysis", "save")
-@hold_on_error
+@fail_on_error
 async def save(state: SG2State) -> dict:
     request = state["request"]
+    on_hold = state.get("status") == "ON_HOLD" and bool(state.get("error"))
     payload = {
         "thread_id": request.thread_id, "rfq_number": request.rfq_number, "stage": "SG2",
-        "status": "DONE", "shortages": state["shortages"], "alternatives": state["alternatives"],
+        "status": "WAITING" if on_hold else "DONE", "shortages": state["shortages"], "alternatives": state["alternatives"],
         "final_plan": state["final_plan"],
     }
     if state.get("recommended_alt") is not None:
@@ -182,6 +185,8 @@ async def save(state: SG2State) -> dict:
     result = await deps.gateway().call("business_save_review", **payload)
     if not isinstance(result, dict) or result.get("thread_id") != request.thread_id or not result.get("review_id"):
         raise ValueError("검토 저장 응답의 thread_id 또는 review_id를 확인할 수 없습니다")
+    if on_hold:
+        return {"review_id": result["review_id"], "saved": True, "next_step": "hold", "status": "ON_HOLD"}
     return {"review_id": result["review_id"], "saved": True, "next_step": "quote_drafting", "status": "DRAFTING", "error": None}
 
 
@@ -194,7 +199,9 @@ def build_graph() -> StateGraph:
     graph.add_edge(START, "get_parts")
     graph.add_conditional_edges("get_parts", lambda s: END if s.get("error") else "check_supply")
     graph.add_conditional_edges("check_supply", lambda s: END if s.get("error") else ("build_alternatives" if s["shortages"] else "save"))
-    graph.add_conditional_edges("build_alternatives", lambda s: END if s.get("error") else "recommend")
-    graph.add_conditional_edges("recommend", lambda s: END if s.get("error") else "save")
+    graph.add_conditional_edges("build_alternatives", lambda s: (
+        END if s.get("status") == "FAILED" else "save" if s.get("status") == "ON_HOLD" else "recommend"
+    ))
+    graph.add_conditional_edges("recommend", lambda s: END if s.get("status") == "FAILED" else "save")
     graph.add_edge("save", END)
     return graph

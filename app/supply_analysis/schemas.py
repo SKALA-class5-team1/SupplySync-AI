@@ -177,7 +177,7 @@ class SupplyAnalysisResult(BaseModel):
     )
     review_id: int | str | None = Field(default=None, description="저장한 검토 ID", examples=[1])
     saved: bool = Field(default=False, description="SG2 결과 저장 성공 여부", examples=[True])
-    status: Literal["DRAFTING", "ON_HOLD"] = Field(default="ON_HOLD", description="다음 작업 상태", examples=["DRAFTING"])
+    status: Literal["DRAFTING", "ON_HOLD", "FAILED"] = Field(default="ON_HOLD", description="진행·업무 보류·기술 실패", examples=["DRAFTING"])
     next_step: Literal["quote_drafting", "hold"] = Field(default="hold", description="상위 그래프 이동 경로", examples=["quote_drafting"])
     error: str | None = Field(default=None, description="보류 원인", examples=[None])
 

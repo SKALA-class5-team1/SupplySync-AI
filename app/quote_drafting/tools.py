@@ -124,7 +124,7 @@ async def business_get_parts_cost(
 
 
 async def business_save_quote(payload: dict[str, Any]) -> SaveQuoteResult:
-    """견적 초안(DRAFT) 저장. 쓰기라서 다시 시도하지 않는다 (사람 승인 후에만 호출)."""
+    """검증한 견적 초안(DRAFT) 저장. 응답 불명 시 중복 실행을 피하도록 재시도하지 않는다."""
     raw = await _call_tool(BUSINESS, "save_quote", payload, retry=False)
     return SaveQuoteResult.model_validate(_clean(raw))
 

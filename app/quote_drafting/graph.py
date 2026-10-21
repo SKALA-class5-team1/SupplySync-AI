@@ -1,11 +1,10 @@
 """SG3 견적 작성 서브그래프
 
-START → prepare_quote ─┬→ agent ⇄ tools ─→ request_save_approval(멈춤) ─→ save_quote → END
-                       └──────(조건 문구 없음)──↗          │ 수정 요청 → agent
+START → prepare_quote ─┬→ agent ⇄ tools ─→ save_quote → END
+                       └──────(조건 문구 없음)──↗
 어느 단계든 한도 초과·실패면 sg3_outcome=FAILED로 END.
 
-호출하는 쪽(상위 그래프)이 checkpointer를 붙여 compile 한다. interrupt는 그 checkpointer로 멈추고,
-같은 thread_id로 Command(resume=...)를 보내면 이어진다.
+검증이 끝나면 바로 DRAFT를 저장한다. 담당자 승인은 SG4에서만 받는다.
 호출 config는 app.core.observability.run_config(thread_id, harness.RUN_NAME). LangSmith 설정은 main.py가 켠다.
 """
 from typing import Optional
@@ -28,19 +27,15 @@ def build_graph(
     graph.add_node("prepare_quote", nodes.prepare_quote)
     graph.add_node("agent", nodes.agent)
     graph.add_node("tools", nodes.run_tools)
-    graph.add_node("request_save_approval", nodes.request_save_approval)
     graph.add_node("save_quote", nodes.save_quote)
 
     graph.add_edge(START, "prepare_quote")
     graph.add_conditional_edges(
-        "prepare_quote", nodes.after_prepare, {"agent": "agent", "request_save_approval": "request_save_approval", "end": END}
+        "prepare_quote", nodes.after_prepare, {"agent": "agent", "save_quote": "save_quote", "end": END}
     )
     graph.add_conditional_edges("agent", nodes.after_agent, {"tools": "tools", "agent": "agent", "end": END})
     graph.add_conditional_edges(
-        "tools", nodes.after_tools, {"request_save_approval": "request_save_approval", "agent": "agent", "end": END}
-    )
-    graph.add_conditional_edges(
-        "request_save_approval", nodes.after_approval, {"save_quote": "save_quote", "agent": "agent", "end": END}
+        "tools", nodes.after_tools, {"save_quote": "save_quote", "agent": "agent", "end": END}
     )
     graph.add_edge("save_quote", END)
     return graph

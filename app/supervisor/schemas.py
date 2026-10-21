@@ -1,25 +1,67 @@
-"""백엔드가 호출하는 워크플로 시작·조회·재개 API."""
+"""백엔드의 실행·재개 계약. 내부 interrupt ID는 API 계층에서 찾는다."""
 
 from datetime import date
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+Identifier = Annotated[str, Field(min_length=1)]
+UserId = Annotated[int, Field(strict=True, gt=0)]
 
-class StartJobRequest(BaseModel):
+
+class StartRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    thread_id: str = Field(min_length=1, description="백엔드가 발급한 실행 ID. 모든 SG에서 동일하게 유지")
-    rfq_number: str = Field(min_length=1, description="검토할 RFQ 번호")
-    base_date: date | None = Field(default=None, description="재현용 공급 기준일. 생략하면 매 조회 시 서버의 오늘")
-    issue_date: date | None = Field(default=None, description="견적 발행일. 생략하면 SG3 실행일")
+    task_id: Identifier
+    rfq_id: Annotated[int, Field(strict=True, gt=0)] | Identifier
+    rfq_number: Identifier
+    thread_id: Identifier
+    request_id: Identifier
+    base_date: date | None = Field(default=None, description="재현용 공급 기준일")
+    issue_date: date | None = Field(default=None, description="재현용 견적 발행일")
 
 
-class ResumeJobRequest(BaseModel):
+class AssumptionInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    interrupt_id: str = Field(min_length=1, description="현재 응답 waiting_for.id. 이전 승인 응답 재사용 방지")
-    response: dict[str, Any] = Field(description="대기 step에 해당하는 SG1 확인 또는 SG3·SG4 승인 본문")
+    field: Identifier
+    value: Identifier
+
+
+class ClarificationDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    assumptions: list[AssumptionInput] = Field(min_length=1)
+
+
+class ClarificationResume(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: Identifier
+    thread_id: Identifier
+    kind: Literal["CLARIFICATION"]
+    userId: UserId
+    decision: ClarificationDecision
+
+
+class ApprovalDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    result: Literal["APPROVED", "REJECTED", "REVISE"]
+    reason: str | None = None
+    changes: dict[str, Any] = Field(default_factory=dict)
+
+
+class ApprovalResume(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    step: Literal["SG4.request_approval"]
+    userId: UserId
+    decision: ApprovalDecision
+    quoteId: int | str | None = Field(default=None, description="전달되면 현재 견적과 대조")
+
+
+ResumeRunRequest = ClarificationResume | ApprovalResume
 
 
 class PendingInput(BaseModel):
@@ -27,10 +69,12 @@ class PendingInput(BaseModel):
     payload: dict[str, Any]
 
 
-class JobResult(BaseModel):
+class RunResult(BaseModel):
+    task_id: str
+    request_id: str
     thread_id: str
     status: str
     current_stage: str
     next_step: str
     waiting_for: PendingInput | None = None
-    state: dict[str, Any] = Field(description="SG1~SG4 공유 상태. bom과 전체 final_plan을 모두 포함")
+    state: dict[str, Any] = Field(description="원 BOM과 전체 final_plan을 포함한 공유 상태")

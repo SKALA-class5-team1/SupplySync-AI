@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     HOST: str = "127.0.0.1"
     PORT: int = 8000
-    RELOAD: bool = True
+    RELOAD: bool = False
     LOG_LEVEL: str = "DEBUG"
 
     # .env에서는 JSON 배열로 작성합니다. 예: ["http://localhost:3000"]
@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     TASK_TIMEOUT_SEC: float = 120.0
     # 도구 결과를 그래프 상태로 넘길 때 문자열 하나의 최대 길이
     MCP_RESULT_MAX_CHARS: int = 2000
+    # BE 응답 제한 300초에서 실패 이벤트 전송 시간을 남긴다.
+    RUN_TIMEOUT_SEC: float = Field(default=270.0, gt=0, le=270)
 
     # MCP 서버 주소 (/mcp까지 포함). business-mcp 호출은 app/core/mcp_client.py, rag-mcp는 서버 준비 후 연결합니다.
     BUSINESS_MCP_URL: str = "http://127.0.0.1:8101/mcp"

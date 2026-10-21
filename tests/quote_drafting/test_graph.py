@@ -13,7 +13,6 @@ import pytest
 import yaml
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.types import Command
 
 from app.core.observability import run_config
 from app.quote_drafting import model as model_module
@@ -164,14 +163,6 @@ def _no_backoff(monkeypatch):
     monkeypatch.setattr(tools, "RETRY_BACKOFF_SEC", 0)
 
 
-def decision(result: str, reason=None, changes=None, step: str = "SG3.request_save_approval") -> dict:
-    """저장 승인 resume 본문 (SG4 resume과 같은 형식, step만 다름)."""
-    return {"step": step, "userId": 2, "decision": {"result": result, "reason": reason, "changes": changes or {}}}
-
-
-APPROVE = decision("APPROVED")
-
-
 def _setup(monkeypatch, mcp=None, script=None, fallback_script=None, delay=0.0):
     mcp = mcp or FakeMcp()
     monkeypatch.setattr(tools, "_call_once", mcp)
@@ -185,24 +176,22 @@ def _run(app, value):
     return asyncio.run(app.ainvoke(value, run_config(THREAD_ID, RUN_NAME)))
 
 
-def _interrupt(out) -> dict:
-    assert "__interrupt__" in out, f"저장 승인에서 멈춰야 한다: {out.get('sg3_outcome')} {out.get('error')}"
-    return out["__interrupt__"][0].value
+def _saved(out) -> dict:
+    assert "__interrupt__" not in out
+    assert out["sg3_outcome"] == "DRAFT_SAVED", out.get("error")
+    return out
 
 
-# --- 정상 흐름 + interrupt 재개 ---
+# --- 자동 저장과 SG4 인계 ---
 
 
-def test_normal_flow_waits_for_approval_then_saves(monkeypatch):
+def test_normal_flow_saves_without_approval(monkeypatch):
     app, mcp, llm, _ = _setup(monkeypatch, script=[search("제12조"), submit(GOOD_TEXTS)])
     first = _run(app, _input())
 
-    payload = _interrupt(first)
-    assert payload["event"] == "SAVE_APPROVAL_REQUIRED"
-    assert payload["card"]["quote_summary"] == "EWP-12-B + OPT-HT + OPT-IP9K, 단가 37,300원"
-    assert "save_quote" not in mcp.names(), "승인 전에는 저장하면 안 된다"
-
-    done = _run(app, Command(resume=APPROVE))  # 같은 thread_id로 재개
+    done = _saved(first)
+    assert done["quote_summary"] == "EWP-12-B + OPT-HT + OPT-IP9K, 단가 37,300원"
+    assert mcp.names().count("save_quote") == 1
     assert done["sg3_outcome"] == "DRAFT_SAVED"
     assert done["quote_id"] == "Q-2026-1019-001"
     assert done["evidence_ids"] == ["pol-003"]
@@ -224,7 +213,7 @@ def test_normal_flow_waits_for_approval_then_saves(monkeypatch):
 def test_revise_from_sg4_saves_next_revision(monkeypatch):
     # SG4 수정 요청: 상위 그래프가 draft_revision을 +1 해서 직전 quote_id·사유·수정 내용과 함께 넘긴다
     app, mcp, llm, _ = _setup(monkeypatch, script=[submit(GOOD_TEXTS)])
-    _interrupt(_run(app, _input(
+    done = _saved(_run(app, _input(
         draft_revision=2, quote_id="Q-2026-1019-001", reject_reason="보증 문구 수정",
         changes={"warranty": "3년 / 100,000 km 유지"},
     )))
@@ -232,7 +221,6 @@ def test_revise_from_sg4_saves_next_revision(monkeypatch):
     assert any("보증 문구 수정" in f for f in task["feedback"])
     assert any("3년 / 100,000 km 유지" in f for f in task["feedback"]), "changes도 재작성에 반영"
 
-    done = _run(app, Command(resume=APPROVE))
     assert done["sg3_outcome"] == "DRAFT_SAVED"
     assert done["draft_revision"] == 2, "받은 차수 그대로 돌려준다 (+1은 상위 그래프가 함)"
     payload = [c for c in mcp.calls if c[1] == "save_quote"][0][2]
@@ -242,8 +230,7 @@ def test_revise_from_sg4_saves_next_revision(monkeypatch):
 def test_sg4_contract_fields(monkeypatch):
     # SG3 -> SG4: quote_id, quote_summary, approval_items, evidence_ids, draft_revision (SG4 연결 약속)
     app, _, _, _ = _setup(monkeypatch, script=[search("제12조"), submit(GOOD_TEXTS)])
-    _run(app, _input())
-    done = _run(app, Command(resume=APPROVE))
+    done = _saved(_run(app, _input()))
     assert done["quote_id"] == "Q-2026-1019-001"
     assert done["quote_summary"] == "EWP-12-B + OPT-HT + OPT-IP9K, 단가 37,300원"
     assert done["approval_items"] and done["evidence_ids"] == ["pol-003"]
@@ -257,51 +244,6 @@ def test_revision_over_max_is_rejected(monkeypatch):
         _run(app, _input(draft_revision=5))
 
 
-def test_rewrite_request_on_approval_then_resume(monkeypatch):
-    app, mcp, llm, _ = _setup(monkeypatch, script=[submit(GOOD_TEXTS), submit(GOOD_TEXTS)])
-    _interrupt(_run(app, _input()))
-
-    again = _run(app, Command(resume=decision("REVISE", "보증 문구 수정. 담당 010-1234-5678", {"warranty": "3년 유지"})))
-    _interrupt(again)  # 다시 써서 다시 멈춘다
-    feedback = llm.received[-1][-1]
-    assert isinstance(feedback, HumanMessage) and "보증 문구 수정" in feedback.content
-    assert "010-1234-5678" not in feedback.content and "[전화번호]" in feedback.content
-    assert "3년 유지" in feedback.content, "decision.changes도 재작성에 반영"
-
-    done = _run(app, Command(resume=APPROVE))
-    assert done["sg3_outcome"] == "DRAFT_SAVED"
-    assert mcp.names().count("save_quote") == 1
-
-
-def test_rejected_is_not_accepted_at_save_approval(monkeypatch):
-    # 최종 반려는 SG4에서만 한다. SG3 저장 승인에 REJECTED가 오면 받지 않고 다시 묻는다 (거부는 REVISE로 재작성)
-    app, mcp, _, _ = _setup(monkeypatch)
-    _interrupt(_run(app, _input()))
-    again = _interrupt(_run(app, Command(resume=decision("REJECTED", "단가 재검토 필요"))))
-    assert "APPROVED, REVISE" in again["invalid_input"]
-    assert "save_quote" not in mcp.names()
-
-
-def test_sg4_step_resume_is_not_accepted(monkeypatch):
-    # SG4 단계용 resume이 SG3 대기에 잘못 오면 승인으로 보지 않고 다시 묻는다
-    app, mcp, _, _ = _setup(monkeypatch)
-    payload = _interrupt(_run(app, _input()))
-    assert payload["step"] == "SG3.request_save_approval"
-    again = _interrupt(_run(app, Command(resume=decision("APPROVED", step="SG4.request_approval"))))
-    assert "step" in again["invalid_input"]
-    assert "save_quote" not in mcp.names()
-
-
-def test_invalid_approval_input_asks_again(monkeypatch):
-    app, mcp, _, _ = _setup(monkeypatch)
-    _interrupt(_run(app, _input()))
-    again = _interrupt(_run(app, Command(resume={"approved": "yes"})))
-    assert "invalid_input" in again
-    assert "save_quote" not in mcp.names()
-    done = _run(app, Command(resume=APPROVE))
-    assert done["sg3_outcome"] == "DRAFT_SAVED"
-
-
 def test_no_conditions_skips_model(monkeypatch):
     app, _, llm, _ = _setup(monkeypatch)
     base = _input()
@@ -313,9 +255,9 @@ def test_no_conditions_skips_model(monkeypatch):
                          "final_plan": {p["part_id"]: p["required_qty"] for p in base["supply_analysis"]["bom"]}},
         final_plan={p["part_id"]: p["required_qty"] for p in base["supply_analysis"]["bom"]},
     ))
-    _interrupt(first)
+    _saved(first)
     assert llm.received == []
-    assert _run(app, Command(resume=APPROVE))["sg3_outcome"] == "DRAFT_SAVED"
+    assert first["sg3_outcome"] == "DRAFT_SAVED"
 
 
 # --- 도구 오류 → ToolMessage ---
@@ -324,7 +266,7 @@ def test_no_conditions_skips_model(monkeypatch):
 def test_tool_error_returned_as_tool_message(monkeypatch):
     mcp = FakeMcp(failures={"rag_search_docs": [tools.ToolError("rag-mcp 검색 실패")]})
     app, _, llm, _ = _setup(monkeypatch, mcp=mcp, script=[search("제12조"), submit(GOOD_TEXTS)])
-    _interrupt(_run(app, _input()))
+    _saved(_run(app, _input()))
 
     tool_msg = llm.received[1][-1]
     assert isinstance(tool_msg, ToolMessage) and tool_msg.status == "error"
@@ -334,7 +276,7 @@ def test_tool_error_returned_as_tool_message(monkeypatch):
 def test_validation_failure_returned_as_tool_message(monkeypatch):
     bad = [t + " 추가 비용 999원" for t in GOOD_TEXTS]
     app, _, llm, _ = _setup(monkeypatch, script=[submit(bad), submit(GOOD_TEXTS)])
-    _interrupt(_run(app, _input()))
+    _saved(_run(app, _input()))
     tool_msg = llm.received[1][-1]
     assert isinstance(tool_msg, ToolMessage) and "검증 실패" in tool_msg.content and "PRICE_RECALC" in tool_msg.content
 
@@ -342,8 +284,8 @@ def test_validation_failure_returned_as_tool_message(monkeypatch):
 def test_policy_failure_goes_to_approval_without_rewrite(monkeypatch):
     # 모터 원가를 올려 6년차 마진이 30% 아래 → 문구로 못 고치므로 재작성 없이 승인 단계에서 판단
     app, _, llm, _ = _setup(monkeypatch, mcp=FakeMcp(part_cost={"P-MTR-BL12": 12000}))
-    payload = _interrupt(_run(app, _input()))
-    assert any(item.startswith("마진 기준 미달") for item in payload["card"]["approval_items"])
+    payload = _saved(_run(app, _input()))
+    assert any(item.startswith("마진 기준 미달") for item in payload["approval_items"])
     assert len(llm.received) == 1
 
 
@@ -378,7 +320,7 @@ def test_task_timeout_fails(monkeypatch):
 
 def test_model_429_retry_then_success(monkeypatch):
     app, _, llm, fallback = _setup(monkeypatch, script=[StatusError(429), submit(GOOD_TEXTS)])
-    _interrupt(_run(app, _input()))
+    _saved(_run(app, _input()))
     assert len(llm.received) == 2
     assert fallback.received == []
 
@@ -389,7 +331,7 @@ def test_model_retries_exhausted_uses_fallback(monkeypatch):
         script=[StatusError(503), StatusError(503), StatusError(503), submit(GOOD_TEXTS)],
         fallback_script=[submit(GOOD_TEXTS)],
     )
-    _interrupt(_run(app, _input()))
+    _saved(_run(app, _input()))
     assert len(llm.received) == 3, "같은 모델로 2회 재시도 (총 3회)"
     assert len(fallback.received) == 1
 
@@ -410,7 +352,7 @@ def test_model_and_fallback_fail_masks_error(monkeypatch):
 def test_mcp_429_retry_then_success(monkeypatch):
     mcp = FakeMcp(failures={"get_options": [StatusError(429)]})
     app, _, _, _ = _setup(monkeypatch, mcp=mcp)
-    _interrupt(_run(app, _input()))
+    _saved(_run(app, _input()))
     assert mcp.names().count("get_options") == 2
 
 
@@ -426,8 +368,7 @@ def test_mcp_failure_after_retries_fails(monkeypatch):
 def test_save_without_response_is_not_retried(monkeypatch):
     mcp = FakeMcp(failures={"save_quote": [asyncio.TimeoutError()]})
     app, _, _, _ = _setup(monkeypatch, mcp=mcp)
-    _interrupt(_run(app, _input()))
-    out = _run(app, Command(resume=APPROVE))
+    out = _run(app, _input())
     assert out["sg3_outcome"] == "SAVE_UNCONFIRMED" and "확인 필요" in out["error"]
     assert mcp.names().count("save_quote") == 1, "쓰기는 자동 재시도하지 않는다"
 
@@ -435,8 +376,7 @@ def test_save_without_response_is_not_retried(monkeypatch):
 def test_save_rejected_by_server_fails(monkeypatch):
     mcp = FakeMcp(failures={"save_quote": [tools.ToolError("409 이미 승인된 견적")]})
     app, _, _, _ = _setup(monkeypatch, mcp=mcp)
-    _interrupt(_run(app, _input()))
-    out = _run(app, Command(resume=APPROVE))
+    out = _run(app, _input())
     assert out["sg3_outcome"] == "FAILED" and "409" in out["error"]
 
 
@@ -446,7 +386,7 @@ def test_save_rejected_by_server_fails(monkeypatch):
 def test_tool_result_pii_is_masked(monkeypatch):
     chunks = {"제12조": {**_CHUNKS["제12조"], "content": "문의 kim.sales@daesung.com, 010-1234-5678"}}
     app, _, llm, _ = _setup(monkeypatch, mcp=FakeMcp(chunks=chunks), script=[search("제12조"), submit(GOOD_TEXTS)])
-    _interrupt(_run(app, _input()))
+    _saved(_run(app, _input()))
     tool_msg = llm.received[1][-1]
     assert "kim.sales@daesung.com" not in tool_msg.content and "010-1234-5678" not in tool_msg.content
     assert "[이메일]" in tool_msg.content and "[전화번호]" in tool_msg.content
@@ -530,7 +470,7 @@ def _real_sg1_state() -> dict:
 def test_accepts_real_sg1_state(monkeypatch):
     app, _, _, _ = _setup(monkeypatch, script=[submit(GOOD_TEXTS)])
     out = _run(app, {**_input(), **_real_sg1_state()})
-    _interrupt(out)
+    _saved(out)
 
     quote = out["quote_draft"]
     assert [(c["type"], c.get("field"), c.get("ref")) for c in quote["conditions"]] == [
@@ -539,7 +479,7 @@ def test_accepts_real_sg1_state(monkeypatch):
     assert quote["checks"] == EXPECTED["checks"], "SG1의 float 값(3.0 등)도 정답과 같은 표기로 검증"
     assert out["condition_facts"][0]["rfq_value"] == "22 L/h"
 
-    done = _run(app, Command(resume=APPROVE))
+    done = out
     assert done["sg3_outcome"] == "DRAFT_SAVED"
     assert done["quote_draft"]["recipient"] == "한별모터스"
     for key in EXPECTED.keys() - {"quote_id", "recipient", "conditions"}:
@@ -559,8 +499,8 @@ def test_missing_sg1_data_goes_to_approval_without_rewrite(monkeypatch):
     base = _input()
     parsed = {**base["parsed_rfq"], "commercial": {**base["parsed_rfq"]["commercial"], "target_price_krw": None}}
     out = _run(app, _input(parsed_rfq=parsed, demand={**base["demand"], "eau": None, "target_price_krw": None}))
-    payload = _interrupt(out)
-    items = payload["card"]["approval_items"]
+    payload = _saved(out)
+    items = payload["approval_items"]
     assert any(item.startswith("문서 형식 확인 필요") for item in items)
     assert any(item.startswith("가격 기준 미달") and "목표가 없음" in item for item in items)
     assert len(llm.received) == 1

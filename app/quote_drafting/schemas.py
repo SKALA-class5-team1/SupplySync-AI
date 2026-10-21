@@ -1,7 +1,7 @@
 """
 quote_drafting 도메인 스키마 정의 (SG3 견적 작성)
 
-SG3 흐름: 단가·원가 계산 -> 조건 문구 작성(Agent Loop) -> 저장 승인(멈춤) -> 견적 초안 저장
+SG3 흐름: 단가·원가 계산 -> 조건 문구 작성(Agent Loop) -> 견적 초안 저장 -> SG4 승인
 MCP 도구 입출력 모델은 app/quote_drafting/CLAUDE.md "SG3가 쓰는 도구 입출력"(business-mcp 명세)을 따른다.
 SG4와 주고받는 필드는 SG4 요청(연결 약속)과 상위 그래프 SupervisorState 이름을 따른다.
   SG3 -> SG4: quote_id, quote_summary, approval_items, evidence_ids, draft_revision
@@ -70,8 +70,8 @@ class DocHit(BaseModel):
 # ----------------------------------------------------------------------
 # 그래프 상태
 # ----------------------------------------------------------------------
-class SaveApprovalCard(BaseModel):
-    """SAVE_APPROVAL_REQUIRED 이벤트로 화면에 보내는 저장 승인 카드."""
+class QuoteSummary(BaseModel):
+    """SG4 최종 승인에 전달하는 견적 요약."""
 
     quote_summary: str = Field(default="", examples=["EWP-12-B + OPT-HT + OPT-IP9K, 단가 37,300원"])
     approval_items: list[str] = Field(default_factory=list, description="사람이 확인할 내용 (기준 미달·대체 부품·계약 수정 제안)")
@@ -130,11 +130,9 @@ class SG3State(BaseModel):
     messages: list[AnyMessage] = Field(default_factory=list, description="문구 작성 Agent Loop 대화")
     turns: int = Field(default=0, description="모델 호출 횟수")
     tool_calls: dict[str, int] = Field(default_factory=dict, description="도구별 호출 횟수")
-    elapsed_sec: float = Field(default=0.0, description="작업 시간 누적 (사람 승인 대기 제외)")
+    elapsed_sec: float = Field(default=0.0, description="견적 작성 작업 시간 누적")
     evidence: list[DocHit] = Field(default_factory=list, description="검색으로 본 근거 조각")
-    ready_to_save: bool = Field(default=False, description="문구 검증을 통과해 저장 승인·저장으로 갈 수 있음")
-    # SG4의 approval_card(ApprovalCard)와 겹치지 않게 이름을 다르게 둔다
-    save_approval_card: Optional[SaveApprovalCard] = None
+    ready_to_save: bool = Field(default=False, description="문구 검증을 통과해 견적을 저장할 수 있음")
 
     # --- SG3가 채우는 값 (SG4State와 같은 이름). draft_revision도 저장한 차수로 돌려준다 ---
     quote_id: Optional[Union[int, str]] = Field(default=None, description="저장한 견적 번호. 수정 요청으로 들어올 때는 직전 견적 번호")

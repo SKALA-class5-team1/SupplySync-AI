@@ -27,10 +27,12 @@ def test_api_invalid_request_uses_existing_error_envelope(gateway, request_data)
     assert gateway.calls == []
 
 
-def test_hold_is_exposed_without_saving(gateway, request_data):
+def test_hold_is_exposed_after_saving_empty_plan(gateway, request_data):
     gateway.alt_docs = []
     with TestClient(app) as client:
         response = client.post(PATH, json=request_data)
     assert response.status_code == 200
     assert response.json()["result"]["next_step"] == "hold"
-    assert response.json()["result"]["saved"] is False
+    assert response.json()["result"]["saved"] is True
+    assert response.json()["result"]["status"] == "ON_HOLD"
+    assert gateway.calls[-1][1]["final_plan"] == {}

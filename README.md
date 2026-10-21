@@ -7,7 +7,7 @@
 
 ```bash
 cp env.example .env
-.venv/bin/python main.py
+RELOAD=false .venv/bin/python main.py
 ```
 
 프로젝트 가상환경에 `requirements.txt`의 패키지가 설치되어 있어야 합니다.
@@ -27,7 +27,7 @@ RAG MCP는 각 SG의 도구 모듈에서 `rag_search_docs`를 호출합니다. R
 | RAG MCP | `RAG_MCP_URL` | `http://127.0.0.1:8102/mcp` |
 | RAG API 문서 | `RAG_API_DOCS_URL` | `http://127.0.0.1:8102/docs` (문서 확인용) |
 | RabbitMQ | `RABBITMQ_HOST`, `RABBITMQ_AMQP_PORT`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD` | 접속 설정만 준비. 발행·소비 코드는 큐와 메시지 규격 확정 후 구현 |
-| Spring Boot (선택) | `SERVER_PORT`, `INTERNAL_API_KEY` | 내부 HTTP API 유틸리티용. `INTERNAL_API_KEY`는 business-mcp 인증에도 같이 씀 |
+| Spring Boot | `SERVER_PORT`, `INTERNAL_API_KEY` | `http://localhost:{SERVER_PORT}/internal/tasks/{task_id}/events`로 진행 이벤트 전송. 키는 business-mcp 인증에도 사용 |
 
 Spring Boot 내부 API를 직접 호출해야 할 때는 `app.core.http_client`의 `get_internal_api_client()`를 `async with`로 열고,
 `client.get("/internal/...")`처럼 실제 백엔드 경로를 전달합니다. `X-Internal-Api-Key`가 자동으로 설정되며 사용 후 클라이언트가 닫힙니다.
@@ -58,7 +58,7 @@ LIVE_MCP=true .venv/bin/python -m pytest tests/core/test_business_mcp_live.py -v
 | --- | --- |
 | SG1 RFQ 검토 | RFQ 번호로 원문을 조회하고 `parsed_rfq`, `selected_model`, `options`, `demand`, 가정·계약 리스크를 전달 |
 | SG2 공급 분석 | 모델·옵션·시작품 수량으로 BOM을 조회. 원본 `bom`과 `bom_effective`를 보존하고 **전체 부품 수량**을 `final_plan`에 저장 |
-| SG3 견적 작성 | `final_plan`과 SG2 결과의 일치·전체 수량을 검증. 실제 선택된 모든 대체 부품을 견적 조건으로 작성하고 저장 승인 후 초안 저장 |
+| SG3 견적 작성 | `final_plan`과 SG2 결과의 일치·전체 수량을 검증. 실제 선택된 모든 대체 부품을 견적 조건으로 작성하고 `POST /internal/quotes`로 즉시 저장. 저장 승인·초안 PUT 없음 |
 | SG4 승인·등록 | 최종 승인 후 **동일한 전체 `final_plan`**으로 재고 재조회. 수량·응답이 일치하고 재고가 충분할 때 등록 |
 
 `final_plan`은 변경 없는 부품도 포함합니다. 예를 들어 원래 제어칩 2,000개 중 500개만 교체했다면
@@ -69,62 +69,106 @@ SG3·SG4에서 원 BOM과 다시 합치지 않습니다. SG3의 `supply_analysis
 
 분기는 다음과 같습니다.
 
-- SG1 모델 선정 실패, SG2 공급 대안 없음·저장 실패, SG3 저장 실패·응답 불명: `ON_HOLD`. 다음 단계로 진행하지 않습니다.
-- SG4 `REVISE`: 견적 차수를 올려 SG3 재작성 → 저장 승인 → 최종 승인을 다시 받습니다.
-- SG4 재고 부족: SG2 재분석 → 새 차수의 SG3 견적 → 두 승인을 다시 받습니다. 잘못된 재고 응답은 보류합니다.
-- SG4 `REJECTED`: 최종 반려로 종료합니다. `REGISTERED`면 `DONE`입니다.
-- 재작성은 기존 SG3 규칙에 따라 최대 4차까지입니다. 한도 초과는 `ON_HOLD`입니다.
+- SG1 HIGH 이슈: 체크포인트 저장 → `CLARIFICATION_REQUIRED` → 확인값과 `userId`를 반영해 재검토합니다.
+- SG1 모델 선정 불가, SG2 사용 가능한 공급 대안·검토 기준 없음: `RUN_ON_HOLD`. SG2는 먼저 검토 결과에 `final_plan={}`을 저장합니다.
+- 도구·모델·응답 검증·저장 실패: `RUN_FAILED`와 HTTP `502`. 다음 단계로 진행하지 않습니다.
+- SG3는 처음 `revision=1`로 저장하고 SG4 승인 대기로 갑니다. 별도의 저장 승인 단계가 없습니다.
+- SG4 `APPROVED`: 전체 부품 재고 확인 → `POST /internal/quotes/{quote_id}/register` 성공 확인 → `RUN_END`의 `data.outcome=REGISTERED`.
+- SG4 `REJECTED`: `RUN_END`의 `data.outcome=REJECTED`. 추가 `DONE` 이벤트는 보내지 않습니다.
+- SG4 `REVISE`: `RUN_END` 없이 차수 +1 → SG3 재작성·저장 → SG4 승인. 재고 부족도 SG2 재분석을 거쳐 차수 +1로 저장합니다.
+- 처음 1차 + 수정 최대 3회, 총 4차까지입니다. 한도에 도달하면 `RUN_ON_HOLD`입니다.
 
 ### 백엔드 호출 API
 
-공통 접두어는 `/api/v1/supplysync`입니다. 모든 요청에 `X-Internal-Api-Key` 헤더가 필요합니다.
-사용자 권한 확인과 승인 기록은 백엔드가 처리한 후 재개 API를 호출합니다.
+BE와 같은 호스트에서 실행할 때 **`AGENT_BASE_URL=http://127.0.0.1:8000`** 입니다.
+다른 호스트에서 접근해야 하면 `HOST=0.0.0.0`으로 실행하고 BE에는 실제 AI 서버의 IP 또는 도메인과 포트 `8000`을 설정합니다.
+`0.0.0.0` 자체는 BE의 접속 주소로 사용하지 않습니다.
+
+아래 경로는 **루트 경로**이며 `/api/v1/supplysync` 접두어를 붙이지 않습니다.
+모든 호출에 BE와 동일한 `X-Internal-Api-Key`가 필요합니다. 사용자 권한 확인·승인 기록은 BE가 처리합니다.
 
 | 메서드·경로 | 동작 |
 | --- | --- |
-| `POST /jobs` | 첫 담당자 입력 대기 또는 종료까지 실행 |
-| `GET /jobs/{thread_id}` | 진행 상태, 공유 State, 현재 대기 요청 조회 |
-| `POST /jobs/{thread_id}/resume` | 현재 대기 요청에 응답하고 다음 대기 또는 종료까지 실행 |
+| `POST /runs` | 첫 담당자 입력 대기 또는 종료까지 실행 |
+| `GET /runs/{thread_id}` | 진행 상태, 공유 State, 현재 대기 요청 조회 |
+| `POST /runs/{thread_id}/resume` | BE 재개 본문을 내부 interrupt 응답으로 변환해 실행 |
 
 시작 본문:
 
 ```json
-{"thread_id": "th_demo", "rfq_number": "HB-EV7-EWP-001"}
-```
-
-재현 테스트에는 선택 필드 `base_date`, `issue_date`를 `YYYY-MM-DD`로 지정할 수 있습니다.
-`base_date`를 생략하면 SG2와 SG4가 각각 조회 시점의 서버 날짜를 사용합니다.
-응답은 `BaseResponse` 형식이며 `result`에 `status`, `current_stage`, `next_step`, `waiting_for`, `state`가 있습니다.
-승인 대기 시 `status=WAITING`이고, `waiting_for`는 `{id, payload}`입니다.
-
-SG3 저장 승인 또는 SG4 최종 승인 재개 본문 (`step`은 현재 `waiting_for.payload.step` 그대로 사용):
-
-```json
 {
-  "interrupt_id": "현재 waiting_for.id",
-  "response": {
-    "step": "SG3.request_save_approval",
-    "userId": 2,
-    "decision": {"result": "APPROVED"}
-  }
+  "task_id": "550e8400-e29b-41d4-a716-446655440000",
+  "rfq_id": 1,
+  "rfq_number": "HB-EV7-EWP-001",
+  "thread_id": "task-550e8400-e29b-41d4-a716-446655440000",
+  "request_id": "be-request-001"
 }
 ```
 
-SG4의 `step`은 `SG4.request_approval`입니다. `REVISE`에는 `reason`과 선택적인 `changes`를
-`decision` 안에 넣습니다. `REJECTED`는 SG4에서만 허용되며 `reason`이 필요합니다.
-SG1 확인 재개는 동일한 바깥 형식에 아래 `response`를 사용합니다.
+`thread_id`는 BE가 준 값을 그대로 LangGraph에서 사용합니다. 재현 테스트에는 선택 필드 `base_date`,
+`issue_date`를 `YYYY-MM-DD`로 지정할 수 있습니다. `base_date` 생략 시 SG2와 SG4가 각각 조회 시점의 날짜를 사용합니다.
+
+현재 첫 요청은 동기 응답입니다. 입력 대기·종료·업무 보류에 도달하면 `200`을 반환합니다.
+`RUN_TIMEOUT_SEC=270` 이내로 실행을 제한하고 실패 이벤트 전송에 최대 약 10초를 남겨 BE의 300초 제한 안에 응답합니다.
+시간 초과는 `504`, 기술 실패는 `502`이며 오류 원인은 공통 응답의 `metadata.exception`에 담습니다.
+BE는 이 실패 응답을 재시도할 필요가 없습니다.
+
+같은 `request_id`와 같은 본문의 재요청은 작업을 다시 시작하지 않습니다.
+원 요청이 실행 중이면 기존 접수 정보로 `202`, 처리가 끝났으면 저장한 접수 결과로 `200`을 반환합니다.
+이전 실행이 실패한 경우에도 같은 요청은 `200`과 `status=FAILED`를 반환합니다.
+동일 식별자에 다른 실행 본문을 쓰면 `409`입니다. 현재 상태는 `GET /runs/{thread_id}`에서 조회합니다.
+
+응답은 `BaseResponse` 형식이며 `result`에 `task_id`, `request_id`, `thread_id`, `status`,
+`current_stage`, `next_step`, `waiting_for`, `state`가 있습니다. 대기 시 `status=WAITING`이며
+`waiting_for={id, payload}`입니다. BE가 내부 `interrupt_id`를 재개 본문에 보낼 필요는 없습니다.
+
+요구 확인 재개:
 
 ```json
-{"step": "SG1.human_confirm", "approved": true, "user_id": 2, "values": {"spec.flow": "22 L/min"}}
+{
+  "task_id": "550e8400-e29b-41d4-a716-446655440000",
+  "thread_id": "task-550e8400-e29b-41d4-a716-446655440000",
+  "kind": "CLARIFICATION",
+  "userId": 2,
+  "decision": {"assumptions": [{"field": "spec.flow", "value": "22 L/min"}]}
+}
 ```
 
-중복 시작, 이전 `interrupt_id`, 다른 `step`, 종료 후 재개는 `409`입니다. 요청 형식 오류는 `400`, 승인 본문 오류는 `422`,
-없는 실행은 `404`, 인증 실패는 `401`입니다. 잘못된 입력은 대기 상태를 소비하지 않습니다.
-SG1 대기 저장과 interrupt를 분리하여 재개할 때 검토 저장이 중복 실행되지 않습니다.
+SG4 승인·반려·수정 재개:
 
-기본 체크포인터는 **프로세스 메모리**입니다. 로컬 단일 워커 실행용으로 서버 재시작 시 상태가 사라집니다.
-운영 시 지속성 체크포인터를 `build_graph(checkpointer=...)`에 주입하고, 여러 워커 사이의 실행 잠금도
-공유해야 합니다. 현재 API는 다음 대기까지 기다리는 HTTP 방식이며 RabbitMQ·SSE는 연결하지 않았습니다.
+```json
+{
+  "step": "SG4.request_approval",
+  "userId": 2,
+  "decision": {"result": "APPROVED", "reason": null, "changes": {}}
+}
+```
+
+`REJECTED`·`REVISE`에는 `reason`이 필요합니다. 선택 필드 `quoteId`를 보내면 현재 견적과 대조합니다.
+생략한 요청은 현재 대기 견적에 적용되므로 이전 차수의 지연 응답까지 식별하려면 BE가 `quoteId`를 함께 보내야 합니다.
+동시에 도착한 재개 요청은 내부 대기 ID와 잠금으로 한 번만 실행합니다.
+요청 형식 오류는 `400`, 승인 내용 오류는 `422`, 없는 실행은 `404`, 인증 실패는 `401`,
+단계·식별자 불일치 또는 종료 후 재개는 `409`입니다. 잘못된 입력은 체크포인트를 소비하지 않습니다.
+
+### 진행 이벤트와 시연 설정
+
+`POST {BE}/internal/tasks/{task_id}/events`에 내부 인증 헤더와 다음 형식으로 보냅니다.
+
+```json
+{"type": "STEP_START", "step": "SUPPLY_CHECK", "message": "부품 공급을 확인합니다"}
+```
+
+`SUPPLY_CHECK`·`ALTERNATIVE_ANALYSIS`는 이벤트의 `step`입니다. 후자는 부족분이 있을 때만 발생합니다.
+첫 이벤트는 `STEP_START / RFQ_ANALYSIS`입니다. `CLARIFICATION_REQUIRED`·`APPROVAL_REQUIRED`는
+그래프 실행이 interrupt에서 반환되고 체크포인트를 읽은 뒤 전송합니다. 이벤트의 `data`에 확인 항목·승인 카드와 실행 ID를 포함합니다.
+
+전송은 1회 최대 3초, 일시 오류(연결 실패·시간 초과·408·429·5xx)에 최대 2회 재시도합니다.
+BE의 `409`는 이미 종료된 작업으로 보고 무시합니다. 다른 전송 실패는 실행 실패로 처리하며
+`RUN_FAILED` 전송까지 실패하더라도 HTTP 오류 본문에 원인을 반환합니다.
+견적 저장·등록 같은 업무 쓰기는 이 이벤트 재시도와 별개로 자동 재실행하지 않습니다.
+
+체크포인터·접수 기록·잠금은 **프로세스 메모리**에 있습니다. 시연은 단일 워커로 실행하고
+`RELOAD=false .venv/bin/python main.py`를 사용해 자동 재시작을 끕니다. 서버를 재시작하면 대기 상태와 중복 접수 기록이 사라집니다.
 
 ### 연결 검증
 
@@ -132,10 +176,10 @@ SG1 대기 저장과 interrupt를 분리하여 재개할 때 검토 저장이 �
 DEBUG=false .venv/bin/python -m pytest -q
 ```
 
-`tests/workflow`는 MCP·LLM 응답만 대체하고 실제 네 그래프와 체크포인터를 실행합니다.
-정상 등록, SG1 확인값 반영, 전체 BOM 전달, 공급 보류, 저장 응답 유실, 수정 요청,
-재고 변경에 따른 재분석, 재작성 한도, 잘못된 재고 응답, 중복 승인, API 시작·조회·재개를 검증합니다.
-실제 업무 실행에는 Business MCP·RAG MCP·백엔드와 LLM 설정이 필요합니다.
+`tests/workflow`는 MCP·LLM·BE HTTP 응답을 대체하고 실제 네 그래프와 체크포인터를 실행합니다.
+정상 등록, 확인자 기록, 전체 BOM 전달, 빈 계획 저장 후 업무 보류, 기술 오류, 수정 한도,
+재고 변경·새 revision, 즉시 재개, 중복 요청, 이벤트 재시도·409, 루트 API 인증을 검증합니다.
+실제 BE·Business MCP·RAG MCP·LLM을 함께 실행한 시연 검증은 별도입니다.
 
 ## Swagger 문서 작성 기준
 

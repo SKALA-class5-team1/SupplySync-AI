@@ -82,10 +82,11 @@ def test_invalid_substitute_never_recommended(gateway, request_data, field, valu
     gateway.substitute[field] = value
     result = run(request_data)
     assert result.next_step == "hold"
-    assert not result.saved
+    assert result.saved and result.status == "ON_HOLD"
     assert result.final_plan == {}
     assert not next(a for a in result.alternatives if a.type == "SUBSTITUTE_PART").feasible
-    assert not any(name == "business_save_review" for name, _ in gateway.calls)
+    assert gateway.calls[-1][0] == "business_save_review"
+    assert gateway.calls[-1][1]["final_plan"] == {}
 
 
 @pytest.mark.parametrize("change", ["empty", "no_rank", "changed_rank", "wrong_grade", "denied", "no_policy"])
@@ -105,7 +106,8 @@ def test_missing_or_changed_rag_blocks_unsupported_recommendation(gateway, reque
     result = run(request_data)
     assert result.next_step == "hold"
     assert result.final_plan == {}
-    assert not result.saved
+    assert result.saved and result.status == "ON_HOLD"
+    assert gateway.calls[-1][1]["final_plan"] == {}
 
 
 def test_incoming_on_due_wins_and_substitution_is_ineligible(gateway, request_data, bom_plan):
@@ -157,10 +159,11 @@ def test_base_date_omitted_is_reused_from_supply_tool(gateway, request_data):
 
 
 @pytest.mark.parametrize("tool", ["business_get_bom", "business_check_parts_supply", "rag_search_docs", "business_get_substitutes", "business_save_review"])
-def test_tool_failure_returns_hold_and_no_committed_plan(gateway, request_data, tool):
+def test_tool_failure_returns_failed_and_no_committed_plan(gateway, request_data, tool):
     gateway.failures[tool] = ToolError("서비스 장애")
     result = run(request_data)
     assert result.next_step == "hold"
+    assert result.status == "FAILED"
     assert "서비스 장애" in result.error
     assert not result.saved
     assert result.final_plan == {}

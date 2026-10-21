@@ -72,7 +72,7 @@ app.add_exception_handler(StarletteHTTPException, starlette_http_exception_handl
 app.add_exception_handler(Exception, general_exception_handler)
 
 # SupplySync 도메인 라우터
-app.include_router(supervisor_router, prefix=settings.API_V1_PREFIX, tags=["Workflow"])
+app.include_router(supervisor_router, tags=["Workflow"])
 for router, path, tag in (
     (rfq_review_router, "rfq-review", "RFQ Review"),
     (supply_analysis_router, "supply-analysis", "Supply Analysis"),

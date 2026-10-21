@@ -43,7 +43,7 @@ def test_shared_stock_not_double_allocated(gateway, request_data):
     add_second_shortage(gateway)
     result = run(request_data)
     assert result.next_step == "hold"
-    assert not result.saved
+    assert result.saved and result.status == "ON_HOLD"
     assert result.final_plan == {}
 
 
