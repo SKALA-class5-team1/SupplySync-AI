@@ -5,7 +5,7 @@ SG4 흐름: 승인 안내 준비 -> 승인 요청(멈춤) -> 재고 재확인 ->
 승인·반려 기록은 백엔드가 저장하며, SG4는 백엔드가 resume 해 줄 때까지 대기한다.
 MCP 도구 입출력 모델은 business-mcp 레포의 CLAUDE.md(check_parts_supply, register_quote)를 따른다.
 """
-from typing import Literal, Optional, Union
+from typing import Literal, Optional, Union, Any
 
 from pydantic import BaseModel, Field
 
@@ -41,7 +41,10 @@ class RegisterResult(BaseModel):
     quote_id: Union[int, str]
     status: str = Field(examples=["REGISTERED"])
     rfq_status: Optional[str] = Field(default=None, examples=["QUOTED"])
-    registered_at: Optional[str] = None
+    outcome: Optional[Literal["CREATED", "ALREADY_PROCESSED"]] = Field(
+        default=None,
+        description="CREATED 새로 등록 / ALREADY_PROCESSED 이미 등록돼 있어 그대로 돌려줌 (중복 요청에도 안전)",
+    )
 
 
 class DocHit(BaseModel):
@@ -67,10 +70,14 @@ class ApprovalCard(BaseModel):
 
 # SG4 가 상위 그래프에 돌려주는 결과
 #   REGISTERED            견적 등록 완료
-#   REWRITE_REQUIRED      반려됨 -> 상위 그래프가 SG3 로 돌려 보낸다
+#   REWRITE_REQUIRED      수정 요청(REVISE) -> 상위 그래프가 SG3 로 돌려 보낸다
+#   REJECTED              최종 반려 -> 재작성 없이 종료
 #   STOCK_REVIEW_REQUIRED 승인 뒤 재고가 부족해 등록 차단. 다음 단계(SG2 복귀 등)는 팀 합의 필요
 #   INVALID_APPROVAL      승인 입력이 계속 잘못 와서 중단
-Sg4Outcome = Literal["REGISTERED", "REWRITE_REQUIRED", "STOCK_REVIEW_REQUIRED", "INVALID_APPROVAL"]
+Sg4Outcome = Literal[
+    "REGISTERED", "REWRITE_REQUIRED", "REJECTED", "STOCK_REVIEW_REQUIRED", "INVALID_APPROVAL", "FAILED"
+]
+DecisionResult = Literal["APPROVED", "REJECTED", "REVISE"]
 
 
 class SG4State(BaseModel):
@@ -94,10 +101,14 @@ class SG4State(BaseModel):
     approval_card: Optional[ApprovalCard] = None
     approved: bool = False
     rejected: bool = False
-    reject_reason: Optional[str] = Field(default=None, description="반려 사유 (상위 그래프가 SG3 재작성에 쓴다)")
+    decision_result: Optional[DecisionResult] = Field(default=None, description="담당자 결정 APPROVED/REJECTED/REVISE")
+    approver_id: Optional[Union[int, str]] = Field(default=None, description="결정한 담당자 (resume 의 userId)")
+    changes: dict[str, Any] = Field(default_factory=dict, description="REVISE 때 담당자가 요청한 수정 내용 (SG3 가 쓴다)")
+    reject_reason: Optional[str] = Field(default=None, description="반려·수정 요청 사유 (REVISE 면 SG3 재작성에 쓴다)")
     supply: Optional[SupplyResult] = None
     recheck_ok: Optional[bool] = None
     sg4_outcome: Optional[Sg4Outcome] = Field(default=None, description="SG4 결과. 상위 그래프의 분기 기준")
     registered_quote_id: Optional[Union[int, str]] = None
     registration_status: Optional[str] = None
+    registration_outcome: Optional[str] = Field(default=None, description="CREATED 또는 ALREADY_PROCESSED")
     error: Optional[str] = None

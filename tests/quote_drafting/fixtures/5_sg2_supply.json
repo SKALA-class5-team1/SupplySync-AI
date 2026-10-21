@@ -1,0 +1,218 @@
+{
+  "$comment": "SG2 정답 (기준일 2026-10-19, 시작품 기준). 대체 칩 사용분은 시작품에만 적용",
+  "rfq_number": "HB-EV7-EWP-001",
+  "base_date": "2026-10-19",
+  "demand": {
+    "sample_qty": 2000,
+    "sample_due_date": "2026-12-15"
+  },
+  "bom_effective": [
+    {
+      "part_id": "P-MTR-BL12",
+      "part_name": "모터",
+      "qty_per_unit": 1,
+      "source": "BASE"
+    },
+    {
+      "part_id": "P-MCU-G1",
+      "part_name": "제어칩 (고온용)",
+      "qty_per_unit": 1,
+      "source": "OPTION:OPT-HT",
+      "replaced_part_id": "P-MCU-STD"
+    },
+    {
+      "part_id": "P-IMP-25",
+      "part_name": "임펠러",
+      "qty_per_unit": 1,
+      "source": "BASE"
+    },
+    {
+      "part_id": "P-HSG-AL",
+      "part_name": "알루미늄 케이스",
+      "qty_per_unit": 1,
+      "source": "BASE"
+    },
+    {
+      "part_id": "P-SEAL-9K",
+      "part_name": "방수 실링 (강화)",
+      "qty_per_unit": 1,
+      "source": "OPTION:OPT-IP9K",
+      "replaced_part_id": "P-SEAL-STD"
+    },
+    {
+      "part_id": "P-CON-4P",
+      "part_name": "4핀 커넥터",
+      "qty_per_unit": 1,
+      "source": "BASE"
+    }
+  ],
+  "supply_check": [
+    {
+      "part_id": "P-MTR-BL12",
+      "part_name": "모터",
+      "required_qty": 2000,
+      "on_hand": 18000,
+      "allocated": 6000,
+      "available": 12000,
+      "incoming_qty": 10000,
+      "incoming_date": "2026-11-20",
+      "short_qty": 0,
+      "status": "OK"
+    },
+    {
+      "part_id": "P-MCU-G1",
+      "part_name": "제어칩 (고온용)",
+      "required_qty": 2000,
+      "on_hand": 9000,
+      "allocated": 7500,
+      "available": 1500,
+      "incoming_qty": 5000,
+      "incoming_date": "2027-01-20",
+      "short_qty": 500,
+      "status": "SHORT"
+    },
+    {
+      "part_id": "P-IMP-25",
+      "part_name": "임펠러",
+      "required_qty": 2000,
+      "on_hand": 22000,
+      "allocated": 4000,
+      "available": 18000,
+      "incoming_qty": 0,
+      "incoming_date": null,
+      "short_qty": 0,
+      "status": "OK"
+    },
+    {
+      "part_id": "P-HSG-AL",
+      "part_name": "알루미늄 케이스",
+      "required_qty": 2000,
+      "on_hand": 15000,
+      "allocated": 5000,
+      "available": 10000,
+      "incoming_qty": 8000,
+      "incoming_date": "2026-12-01",
+      "short_qty": 0,
+      "status": "OK"
+    },
+    {
+      "part_id": "P-SEAL-9K",
+      "part_name": "방수 실링 (강화)",
+      "required_qty": 2000,
+      "on_hand": 8000,
+      "allocated": 1000,
+      "available": 7000,
+      "incoming_qty": 0,
+      "incoming_date": null,
+      "short_qty": 0,
+      "status": "OK"
+    },
+    {
+      "part_id": "P-CON-4P",
+      "part_name": "4핀 커넥터",
+      "required_qty": 2000,
+      "on_hand": 30000,
+      "allocated": 10000,
+      "available": 20000,
+      "incoming_qty": 0,
+      "incoming_date": null,
+      "short_qty": 0,
+      "status": "OK"
+    }
+  ],
+  "shortages": [
+    {
+      "part_id": "P-MCU-G1",
+      "part_name": "제어칩 (고온용)",
+      "required_qty": 2000,
+      "available": 1500,
+      "short_qty": 500,
+      "incoming_qty": 5000,
+      "incoming_date": "2027-01-20",
+      "incoming_delay_days": 36,
+      "lead_time_days": 120,
+      "is_critical": true
+    }
+  ],
+  "alternatives": [
+    {
+      "type": "WAIT_INCOMING",
+      "label": "입고 대기",
+      "target_part_id": "P-MCU-G1",
+      "covered_qty": 500,
+      "available_date": "2027-01-20",
+      "meets_due_date": false,
+      "delay_days": 36,
+      "extra_cost_krw": 0,
+      "feasible": true,
+      "recommended": false,
+      "reason": "예정 입고 5,000개를 기다리면 전량 확보되지만 고객 납기보다 늦음",
+      "refs": [
+        "alt-003"
+      ]
+    },
+    {
+      "type": "PARTIAL_DELIVERY",
+      "label": "분할 납품",
+      "target_part_id": "P-MCU-G1",
+      "covered_qty": 500,
+      "available_date": "2027-01-20",
+      "meets_due_date": false,
+      "delay_days": 36,
+      "extra_cost_krw": 0,
+      "feasible": true,
+      "recommended": false,
+      "reason": "가용 1,500개는 납기 내 납품, 나머지 500개는 입고 후 납품. 지연 배상 상한 없는 계약 조항과 충돌",
+      "refs": [
+        "alt-003",
+        "pol-004"
+      ],
+      "on_time_qty": 1500,
+      "late_qty": 500
+    },
+    {
+      "type": "SUBSTITUTE_PART",
+      "label": "대체 부품 (타 공급처)",
+      "target_part_id": "P-MCU-G1",
+      "covered_qty": 500,
+      "available_date": "2026-11-02",
+      "meets_due_date": true,
+      "delay_days": 0,
+      "extra_cost_krw": 150000,
+      "feasible": true,
+      "recommended": true,
+      "reason": "누리칩스 P-MCU-G1-ALT 가용 3,000개, 동일 등급·핀 호환, 검증 14일 후 투입 가능",
+      "refs": [
+        "alt-002",
+        "pol-009",
+        "pol-010"
+      ],
+      "substitute_part_id": "P-MCU-G1-ALT",
+      "substitute_supplier": "누리칩스",
+      "validation_days": 14,
+      "unit_cost_diff_krw": 300
+    },
+    {
+      "type": "NEW_ORDER",
+      "label": "원 공급사 신규 발주",
+      "target_part_id": "P-MCU-G1",
+      "covered_qty": 500,
+      "available_date": "2027-02-16",
+      "meets_due_date": false,
+      "delay_days": 63,
+      "extra_cost_krw": 0,
+      "feasible": false,
+      "recommended": false,
+      "reason": "세온반도체 신규 발주 조달기간 120일로 납기 불가",
+      "refs": [
+        "alt-003"
+      ],
+      "lead_time_days": 120
+    }
+  ],
+  "recommended_alt": "SUBSTITUTE_PART",
+  "final_plan": {
+    "P-MCU-G1": 1500,
+    "P-MCU-G1-ALT": 500
+  }
+}

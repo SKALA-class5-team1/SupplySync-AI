@@ -8,6 +8,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.approval_registration.router import router as approval_registration_router
 from app.core.config import settings
 from app.core.logging_config import setup_logging
+from app.core.observability import setup_tracing
 from app.core.middleware import (
     RequestIDMiddleware,
     LoggingMiddleware,
@@ -27,6 +28,7 @@ from app.rfq_review.router import router as rfq_review_router
 from app.supply_analysis.router import router as supply_analysis_router
 
 setup_logging()
+setup_tracing()
 
 app = FastAPI(
     title=settings.APP_NAME,

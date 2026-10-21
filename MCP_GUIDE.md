@@ -20,9 +20,11 @@ REST API처럼 URL·경로를 하나하나 맞출 필요 없이, 서버가 "내�
 app/core/mcp_client.py  (공통 MCP 클라이언트, 이미 만들어져 있음)
    │  HTTP + 헤더 X-Internal-Api-Key
    ▼
-business-mcp 서버 (:8101/mcp)
-   ├─ 읽기 Tool 5개 → PostgreSQL (Supabase) 조회
-   └─ 쓰기 Tool 3개 + RFQ 원문 → Spring 백엔드 /internal/** 호출
+business-mcp 서버 (:8101/mcp)   ← DB에 직접 접근하지 않음
+   │  HTTP /internal/** + 헤더 X-Internal-Api-Key
+   ▼
+Spring 백엔드 → PostgreSQL (Supabase)
+   (조회 Tool 6개, 쓰기 Tool 3개, RFQ 원문 모두 백엔드를 거친다)
 ```
 
 ---
@@ -57,11 +59,16 @@ INTERNAL_API_KEY=<팀 공용 내부 호출 키>
 - URL은 **`/mcp`까지 포함**한다. 코드에서 `/mcp`를 또 붙이지 않는다.
 - `INTERNAL_API_KEY`는 AI 서버·business-mcp·백엔드가 **같은 값 하나**를 공유한다 (내부 호출 공용 키). 키 값은 팀에서 따로 공유받는다. Git·메신저 공개 채널에 올리지 않는다.
 
-### 3-3. business-mcp 서버 실행 (SupplySync-Business-MCP 폴더)
+### 3-3. 백엔드와 business-mcp 서버 실행
+business-mcp는 모든 데이터를 Spring 백엔드에서 가져오므로 **백엔드를 먼저** 띄운다.
 ```bash
+# SupplySync-BE 폴더: v2.2 데모 시드까지 적재 (그 레포 README 참고)
+SPRING_PROFILES_ACTIVE=demo ./gradlew bootRun
+
+# SupplySync-Business-MCP 폴더
 mvn spring-boot:run
 ```
-`Started BusinessMcpApplication`이 보이면 준비 완료. (JDK 21, Maven 필요. 서버 쪽 `.env` 설정은 그 레포 README 참고)
+`Started BusinessMcpApplication`이 보이면 준비 완료. (JDK 21, Maven 필요. 서버 쪽 `.env`의 `BACKEND_URL`·`INTERNAL_API_KEY`는 그 레포 README 참고)
 
 ### 3-4. 연결 확인 (SupplySync-AI 폴더)
 ```bash
@@ -166,15 +173,16 @@ app = graph.compile()
 | `get_bom` | `business_get_bom` | 모델+옵션 → 부품별 필요 수량 | SG2, SG4 | 읽기 |
 | `check_parts_supply` | `business_check_parts_supply` | 재고·부족·입고·위험 코드·대체 부품 | SG2, SG4 | 읽기 |
 | `get_parts_cost` | `business_get_parts_cost` | 부품 원가 합계·내역 | SG3 | 읽기 |
-| `get_rfq_content` | `business_get_rfq_content` | RFQ 원문 | SG1 | 읽기 (백엔드) |
-| `save_review` | `business_save_review` | SG1·SG2 결과 저장 | SG1, SG2 | 쓰기 (백엔드) |
-| `save_quote` | `business_save_quote` | 견적 초안 저장 (DRAFT) | SG3 | 쓰기 (백엔드) |
-| `register_quote` | `business_register_quote` | 승인된 견적 등록 (**되돌리기 어려움, 사람 승인 후에만**) | SG4 | 쓰기 (백엔드) |
+| `get_substitutes` | `business_get_substitutes` | 부품 하나의 대체 부품 후보 (`check_parts_supply`의 `substitutes`와 같은 형식) | SG2 | 읽기 |
+| `get_rfq_content` | `business_get_rfq_content` | RFQ 원문 | SG1 | 읽기 |
+| `save_review` | `business_save_review` | SG1·SG2 결과 저장 (`status`, SG1 `demand`, 항목별 `evidence`) | SG1, SG2 | 쓰기 |
+| `save_quote` | `business_save_quote` | 견적 초안 생성 (DRAFT, `revision`별. 같은 revision이면 기존 견적 반환) | SG3 | 쓰기 |
+| `register_quote` | `business_register_quote` | 승인된 견적 등록 (**되돌리기 어려움, 사람 승인 후에만**) | SG4 | 쓰기 |
 
 입력·출력 필드는 SupplySync-Business-MCP의 `CLAUDE.md` "Tool 명세"를 본다.
 
-> 백엔드 Tool 4개(`get_rfq_content`, `save_*`, `register_quote`)는 Spring 백엔드의 `/internal/**` API가 만들어져야 동작한다.
-> 그 전에는 "백엔드 오류 …" `McpToolError`가 나는 것이 정상이다.
+> 모든 Tool이 Spring 백엔드(`/internal/**`)를 호출하므로 **백엔드가 떠 있어야 동작한다** (live 테스트는 백엔드를 `SPRING_PROFILES_ACTIVE=demo`로 실행).
+> 백엔드가 꺼져 있으면 "백엔드 오류: 연결 실패 …" `McpToolError`가 난다.
 
 ---
 
@@ -210,7 +218,7 @@ business-mcp는 [MCP 공식 명세](https://modelcontextprotocol.io/specificatio
 ## 9. 체크리스트
 
 - [ ] `.env`에 `BUSINESS_MCP_URL`, `INTERNAL_API_KEY` 설정
-- [ ] business-mcp 서버 실행 후 `LIVE_MCP=true … test_business_mcp_live.py` 통과
+- [ ] 백엔드(demo)·business-mcp 서버 실행 후 `LIVE_MCP=true … test_business_mcp_live.py` 통과
 - [ ] 클라이언트를 새로 만들지 않고 `app.core.mcp_client`에서 import
 - [ ] 계산에 쓰는 값은 `call_business_tool` (사용법 A)
 - [ ] 쓰기 Tool은 코드에서 조건 확인 후 호출. `register_quote`는 사람 승인 후에만

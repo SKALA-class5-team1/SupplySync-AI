@@ -44,7 +44,7 @@ Spring Boot 내부 API를 직접 호출해야 할 때는 `app.core.http_client`�
 | `get_business_tools()` | LLM에 `bind_tools`로 넘길 Tool. 이름에 `business_` 접두어 (예: `business_get_bom`) |
 | `call_business_tool("get_bom", {...})` | 코드에서 직접 호출. 결과 JSON을 dict로 반환하고, Tool 오류면 `McpToolError` |
 
-연결 확인 (business-mcp 서버를 먼저 실행):
+연결 확인 (Spring 백엔드(demo)와 business-mcp 서버를 먼저 실행):
 
 ```bash
 LIVE_MCP=true .venv/bin/python -m pytest tests/core/test_business_mcp_live.py -v
