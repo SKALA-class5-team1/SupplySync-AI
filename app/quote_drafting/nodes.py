@@ -52,7 +52,8 @@ logger = logging.getLogger(__name__)
 
 SAVE_APPROVAL_EVENT = "SAVE_APPROVAL_REQUIRED"
 SAVE_APPROVAL_STEP = "SG3.request_save_approval"  # resume 요청의 step 값 (SG4는 "SG4.request_approval")
-_DECISION_RESULTS = {"APPROVED", "REJECTED", "REVISE"}
+# 최종 반려(REJECTED)는 견적이 저장된 뒤 SG4에서만 한다. SG3 단계의 거부는 수정 요청(REVISE)으로 재작성한다.
+_DECISION_RESULTS = {"APPROVED", "REVISE"}
 _SUBMIT_REMINDER = "작업은 submit_conditions 도구 호출로 끝내야 한다. 모든 index의 문구를 submit_conditions로 제출하라."
 
 
@@ -134,9 +135,10 @@ def _parse_save_decision(value: Any) -> dict[str, Any]:
 
     SG4 resume과 같은 형식이고 step만 다르다 (실행 서비스가 형식 하나로 보내도록):
       {"step": "SG3.request_save_approval", "userId": 2,
-       "decision": {"result": "APPROVED" | "REJECTED" | "REVISE", "reason": "...", "changes": {}}}
+       "decision": {"result": "APPROVED" | "REVISE", "reason": "...", "changes": {}}}
     - step 이 지금 대기 중인 단계와 다르면 받지 않는다 (SG4 단계의 응답이 잘못 오는 일 방지).
-    - REJECTED(저장하지 않고 종료)·REVISE(문구 수정 요청)에는 reason 이 있어야 한다.
+    - REVISE(문구 수정 요청)에는 reason 이 있어야 한다.
+    - REJECTED는 받지 않는다. 최종 반려는 SG4 단계에서만 한다 (견적이 없으면 BE가 RUN_END(REJECTED)를 막음).
     - 승인자 권한 검사와 기록은 백엔드가 한다. 여기서는 userId 를 남기기만 한다.
     """
     if not isinstance(value, dict):
@@ -151,13 +153,13 @@ def _parse_save_decision(value: Any) -> dict[str, Any]:
         raise ValueError("decision 은 객체여야 합니다")
     result = decision.get("result")
     if result not in _DECISION_RESULTS:
-        raise ValueError("decision.result 는 APPROVED, REJECTED, REVISE 중 하나여야 합니다")
+        raise ValueError("decision.result 는 APPROVED, REVISE 중 하나여야 합니다 (최종 반려는 SG4 승인 단계에서)")
     reason = decision.get("reason")
     if reason is not None and not isinstance(reason, str):
         raise ValueError("decision.reason 은 문자열이어야 합니다")
     reason = reason.strip() if reason else None
     if result != "APPROVED" and not reason:
-        raise ValueError("반려·수정 요청에는 decision.reason(사유)이 필요합니다")
+        raise ValueError("수정 요청에는 decision.reason(사유)이 필요합니다")
     changes = decision.get("changes") or {}
     if not isinstance(changes, dict):
         raise ValueError("decision.changes 는 객체여야 합니다")
@@ -365,11 +367,6 @@ class QuoteDraftingNodes:
                     "quote_summary": card.quote_summary,
                     "approval_items": card.approval_items,
                 }
-            if result == "REJECTED":
-                # 저장하지 않고 끝낸다. 상위 그래프는 DRAFT_SAVED가 아니면 SG4로 가지 않고 종료한다.
-                error = f"저장 승인 단계에서 반려: {mask_pii(reason)}"
-                logger.warning("SG3 REJECTED trace_id=%s %s", state.thread_id, error)
-                return {"sg3_outcome": "REJECTED", "error": error, "ready_to_save": False}
             if not quote["conditions"]:
                 # SG3가 고칠 수 있는 건 조건 문구뿐이다. 문구가 없으면 다시 쓸 것이 없다.
                 return _failed(state, f"수정 요청을 반영할 조건 문구가 없습니다: {mask_pii(reason)}")
@@ -433,6 +430,6 @@ class QuoteDraftingNodes:
 
     @staticmethod
     def after_approval(state: SG3State) -> str:
-        if state.sg3_outcome in ("FAILED", "REJECTED"):
+        if state.sg3_outcome == "FAILED":
             return "end"
         return "save_quote" if state.ready_to_save else "agent"

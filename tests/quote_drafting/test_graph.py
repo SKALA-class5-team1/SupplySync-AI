@@ -271,11 +271,12 @@ def test_rewrite_request_on_approval_then_resume(monkeypatch):
     assert mcp.names().count("save_quote") == 1
 
 
-def test_save_rejected_by_approver_ends_without_saving(monkeypatch):
+def test_rejected_is_not_accepted_at_save_approval(monkeypatch):
+    # 최종 반려는 SG4에서만 한다. SG3 저장 승인에 REJECTED가 오면 받지 않고 다시 묻는다 (거부는 REVISE로 재작성)
     app, mcp, _, _ = _setup(monkeypatch)
     _interrupt(_run(app, _input()))
-    out = _run(app, Command(resume=decision("REJECTED", "단가 재검토 필요")))
-    assert out["sg3_outcome"] == "REJECTED" and "단가 재검토 필요" in out["error"]
+    again = _interrupt(_run(app, Command(resume=decision("REJECTED", "단가 재검토 필요"))))
+    assert "APPROVED, REVISE" in again["invalid_input"]
     assert "save_quote" not in mcp.names()
 
 
