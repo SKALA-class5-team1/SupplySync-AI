@@ -1,0 +1,137 @@
+"""견적 조건부 사항(conditions)
+
+코드가 조건의 구조와 숫자(type, field, part_id, qty, extra_cost_krw, ref)를 정하고,
+문구(text)는 writer가 facts만 보고 쓴다. 문구 속 숫자는 facts에 있는 숫자여야 한다.
+"""
+import json
+import re
+from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
+
+from app.quote_drafting.calc import calc_substitute_extra_cost
+
+# 대체 부품 조건의 근거 조항: 제20조(사용 사실 명시), 제21조(원가 증가분 별도 표시)
+SUBSTITUTE_PART_REF = "제20조, 제21조"
+
+_NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+@dataclass
+class ConditionDraft:
+    condition: dict  # quote_draft.conditions 한 항목 (text는 writer가 채움)
+    facts: dict  # writer에 넘기는 사실. 문구 숫자 검증 기준
+    query: str | None = None  # 근거 문서 검색어
+    evidence: list[dict] = field(default_factory=list)
+
+
+def _get_path(data: dict, path: str):
+    for key in path.split("."):
+        if not isinstance(data, dict):
+            return None
+        data = data.get(key)
+    return data
+
+
+def _format_rfq_value(value) -> str | None:
+    # {"value": 22, "unit": "L/h"} → "22 L/h"
+    if isinstance(value, dict) and "value" in value:
+        return f"{value['value']} {value.get('unit', '')}".strip()
+    return None if value is None else str(value)
+
+
+def _field_for_ref(ref: str, rules: dict) -> str:
+    """조항 번호로 rules.yaml policy_limits의 필드를 찾는다.
+
+    한 조항에 필드가 여럿이면 공통 접두어로 묶는다 (warranty_years, warranty_km → contract.warranty).
+    """
+    fields = [limit["field"] for limit in rules["policy_limits"] if limit.get("ref") == ref]
+    if not fields:
+        raise ValueError(f"rules.yaml policy_limits에 {ref} 항목이 없습니다.")
+    if len(fields) == 1:
+        return fields[0]
+    prefix = fields[0]
+    for f in fields[1:]:
+        while not f.startswith(prefix):
+            prefix = prefix[:-1]
+    return prefix.rstrip("_.")
+
+
+def build_conditions(parsed_rfq: dict, rfq_review: dict, supply_analysis: dict, rules: dict) -> list[ConditionDraft]:
+    drafts = []
+
+    # 1) SG1에서 담당자가 승인한 가정값
+    for assumption in rfq_review.get("assumptions", []):
+        drafts.append(
+            ConditionDraft(
+                condition={"type": "ASSUMPTION", "field": assumption["field"], "text": ""},
+                facts={
+                    "field": assumption["field"],
+                    "assumed_value": assumption["value"],
+                    "rfq_value": _format_rfq_value(_get_path(parsed_rfq, assumption["field"])),
+                },
+            )
+        )
+
+    # 2) SG2 추천안이 대체 부품이면 사용 사실과 추가 비용 (다른 대안은 견적 조건이 아니다)
+    if supply_analysis.get("recommended_alt") == "SUBSTITUTE_PART":
+        alt = next(a for a in supply_analysis["alternatives"] if a["type"] == "SUBSTITUTE_PART")
+        shortage = next(
+            (s for s in supply_analysis.get("shortages", []) if s["part_id"] == alt["target_part_id"]), {}
+        )
+        qty = alt["covered_qty"]
+        extra_cost = calc_substitute_extra_cost(qty, alt["unit_cost_diff_krw"])
+        drafts.append(
+            ConditionDraft(
+                condition={
+                    "type": "SUBSTITUTE_PART",
+                    "text": "",
+                    "part_id": alt["substitute_part_id"],
+                    "qty": qty,
+                    "extra_cost_krw": extra_cost,
+                    "ref": SUBSTITUTE_PART_REF,
+                },
+                facts={
+                    "sample_qty": supply_analysis["demand"]["sample_qty"],
+                    "qty": qty,
+                    "original_part_name": shortage.get("part_name"),
+                    "substitute_part_id": alt["substitute_part_id"],
+                    "substitute_supplier": alt.get("substitute_supplier"),
+                    "extra_cost_krw": extra_cost,
+                    "ref": SUBSTITUTE_PART_REF,
+                },
+                query=SUBSTITUTE_PART_REF.replace(",", ""),
+            )
+        )
+
+    # 3) SG1 계약 리스크 → 사내 한도로 수정 제안
+    for risk in rfq_review.get("contract_risks", []):
+        drafts.append(
+            ConditionDraft(
+                condition={
+                    "type": "CONTRACT_PROPOSAL",
+                    "field": _field_for_ref(risk["ref"], rules),
+                    "text": "",
+                    "ref": risk["ref"],
+                },
+                facts={"customer_terms": risk["item"], "limit": risk["limit"], "ref": risk["ref"]},
+                query=risk["ref"],
+            )
+        )
+
+    return drafts
+
+
+def extract_numbers(text: str) -> set[Decimal]:
+    numbers = set()
+    for token in _NUMBER.findall(text):
+        try:
+            numbers.add(Decimal(token.replace(",", "")))
+        except InvalidOperation:
+            continue
+    return numbers
+
+
+def find_unsupported_numbers(text: str, facts: dict) -> list[str]:
+    """문구에 나온 숫자 중 facts(근거 문서 포함)에 없는 숫자."""
+    allowed = extract_numbers(json.dumps(facts, ensure_ascii=False))
+    return sorted(str(n) for n in extract_numbers(text) - allowed)
