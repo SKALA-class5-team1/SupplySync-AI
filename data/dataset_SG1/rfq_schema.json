@@ -1,0 +1,64 @@
+{
+  "$comment": "RFQ 분석 노드(parse_rfq)가 RFQ 원문에서 추출해야 하는 JSON 양식. 단위는 원문 그대로 보존하고, 정규화·판정은 검증 노드가 한다. 원문에 없거나 'TBD'면 null.",
+  "rfq_id": "string",
+  "customer": "string",
+  "project": "string",
+  "item": "string",
+  "issue_date": "YYYY-MM-DD",
+  "quote_due_date": "YYYY-MM-DD",
+
+  "volume": {
+    "eau": "int  // 연간 물량",
+    "supply_years": "int",
+    "lifetime_volume": "int  // 총 공급 물량",
+    "sample_qty": "int",
+    "sample_due_date": "YYYY-MM-DD"
+  },
+
+  "schedule": {
+    "sop_date": "YYYY-MM-DD  // 양산 시작",
+    "ppap_date": "YYYY-MM-DD  // 양산 승인 완료"
+  },
+
+  "spec": {
+    "flow": { "value": "number", "unit": "string  // 원문 단위 그대로 (L/min, L/h ...)" },
+    "head_kpa": "number",
+    "voltage_min": "number",
+    "voltage_max": "number",
+    "temp_min": "number",
+    "temp_max": "number",
+    "ip_rating": "string",
+    "noise_db_max": "number",
+    "comm": "string",
+    "max_size_mm": { "l": "number", "w": "number", "h": "number" },
+    "max_weight_kg": "number",
+    "connector": "string | null",
+    "coolant": "string | null"
+  },
+
+  "quality": {
+    "certifications": ["string"],
+    "ppap_level": "int"
+  },
+
+  "delivery": {
+    "plant": "string",
+    "incoterms": "string",
+    "packing": "string"
+  },
+
+  "commercial": {
+    "target_price_krw": "int",
+    "annual_cr_pct": "number",
+    "payment_days": "int  // 결제 기간 일수 (익월 60일 → 60)",
+    "payment_terms": "string",
+    "currency": "string"
+  },
+
+  "contract": {
+    "warranty_years": "number",
+    "warranty_km": "int",
+    "penalty_cap_pct": "number | null  // 상한 없음이면 null",
+    "eol_notice_months": "int"
+  }
+}

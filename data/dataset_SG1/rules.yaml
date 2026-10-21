@@ -1,0 +1,87 @@
+# 검증 노드(validate_rules)가 쓰는 결정적 규칙
+# 판정은 여기 값으로, 설명·근거 인용은 VectorDB 문서로.
+
+severity:
+  HIGH: "이 값으로는 사양 비교를 진행할 수 없음 → 담당자 확인(interrupt) 필요"
+  MED:  "견적은 진행 가능하나 고객 확인 질의 필요"
+  LOW:  "참고 사항"
+
+# 1. 누락 검사 — 값이 null 이거나 'TBD' 이면 누락
+required_fields:
+  - { field: spec.flow,          severity: HIGH }
+  - { field: spec.temp_max,      severity: HIGH }
+  - { field: spec.ip_rating,     severity: HIGH }
+  - { field: spec.noise_db_max,  severity: HIGH }
+  - { field: spec.connector,     severity: MED,  default_assumption: "표준 4핀 커넥터" }
+  - { field: spec.coolant,       severity: MED,  default_assumption: "에틸렌글리콜 50% 혼합액" }
+  - { field: volume.eau,         severity: HIGH }
+  - { field: schedule.sop_date,  severity: HIGH }
+
+# 2. 단위 정규화 + 범위 검사
+unit_conversion:
+  flow:
+    target_unit: "L/min"
+    factors: { "L/min": 1, "L/h": 0.016667, "L/s": 60 }
+
+ranges:   # 정상 범위를 벗어나면 이상값
+  - { field: spec.flow_lpm,     min: 5,   max: 60,  severity: HIGH,
+      hint: "L/h 표기로 0.37 L/min이 되면 단위 오기 의심. 원래 값이 22 L/min인지 확인" }
+  - { field: spec.voltage_min,  min: 6,   max: 16,  severity: MED }
+  - { field: spec.voltage_max,  min: 12,  max: 32,  severity: MED }
+  - { field: spec.temp_max,     min: 60,  max: 150, severity: MED }
+  - { field: spec.noise_db_max, min: 30,  max: 70,  severity: MED }
+
+# 3. 계산 일관성
+consistency:
+  - id: lifetime_volume
+    rule: "volume.lifetime_volume == volume.eau * volume.supply_years"
+    severity: MED
+
+# 4. 날짜 순서
+date_order:   # 앞 날짜가 뒤 날짜보다 빠르거나 같아야 함
+  - { before: issue_date,           after: quote_due_date,    severity: MED }
+  - { before: quote_due_date,       after: volume.sample_due_date, severity: MED }
+  - { before: volume.sample_due_date, after: schedule.sop_date, severity: MED }
+  - { before: schedule.ppap_date,   after: schedule.sop_date, severity: MED,
+      hint: "양산 승인(PPAP)은 양산 시작(SOP) 전에 끝나야 함" }
+
+# 5. 계약 한도 (근거 원문: sales_policy.md)
+policy_limits:
+  - { field: commercial.annual_cr_pct,  max: 3,      severity: MED, ref: "제11조" }
+  - { field: contract.warranty_years,   max: 3,      severity: MED, ref: "제12조" }
+  - { field: contract.warranty_km,      max: 100000, severity: MED, ref: "제12조" }
+  - { field: contract.penalty_cap_pct,  max: 10, null_is_violation: true, severity: MED, ref: "제13조" }
+  - { field: contract.eol_notice_months, max: 12,    severity: LOW, ref: "제14조" }
+  - { field: commercial.payment_days,   max: 90,     severity: MED, ref: "제15조" }
+
+# 5-1. 견적 검증 (SG3, validate_quote)
+price_by_year:           # 연도별 단가 (근거: RFQ §5, 제11조)
+  years: 6               # 공급 기간
+  formula: "round(unit_price * (1 - cr/100) ** (year - 1))"   # 1년차 = 기준가, 2년차부터 인하 → 6년차는 5회 적용
+  rounding: "원 단위 반올림"
+quote_margin:            # 근거 원문: sales_policy.md 제16조
+  basis: "부품 원가"     # 원가 = 옵션 반영 BOM 부품 단가 합계 (가공·물류비 미포함)
+  formula: "(unit_price - parts_cost) / unit_price"
+  min_pct: 30
+  check_years: [1, last] # 1년차와 연간 인하 적용 마지막 연도 모두 확인
+  ref: "제16조"
+quote_format:            # 근거 원문: sales_policy.md 제17조
+  required: [recipient, item, unit_price, quantity, due_date, incoterms, valid_until, conditions]
+  valid_days: 30
+  ref: "제17조"
+
+
+# 6. 사양 비교 순서 (match_spec 노드)
+ip_rank: { IP67: 1, IP6K9K: 2 }
+spec_compare:
+  - { req: spec.flow_lpm,      model: flow_lpm,  op: ">=" }
+  - { req: spec.head_kpa,      model: head_kpa,  op: ">=" }
+  - { req: spec.voltage_min,   model: voltage_min, op: "<=" }
+  - { req: spec.voltage_max,   model: voltage_max, op: ">=" }
+  - { req: spec.temp_min,      model: temp_min,  op: "<=" }
+  - { req: spec.temp_max,      model: temp_max,  op: ">=", fixable_by: OPT-HT }
+  - { req: spec.ip_rating,     model: ip_rating, op: "rank>=", fixable_by: OPT-IP9K }
+  - { req: spec.noise_db_max,  model: noise_db,  op: "<=" }
+  - { req: spec.comm,          model: comm,      op: "contains" }
+  - { req: spec.max_size_mm,   model: "size_l_mm,size_w_mm,size_h_mm", op: "each<=" }
+  - { req: spec.max_weight_kg, model: weight_kg, op: "<=" }
