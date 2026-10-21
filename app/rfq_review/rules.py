@@ -166,6 +166,25 @@ def _flow_lpm(flow: Any) -> Optional[float]:
 # ---------------------------------------------------------------------------
 # 정규화
 # ---------------------------------------------------------------------------
+def effective_rfq(parsed: dict, assumptions: list[dict]) -> dict:
+    """원문은 보존하고 담당자가 확인한 물량·일정 등만 실행 값에 반영한다."""
+    effective = copy.deepcopy(parsed)
+    for assumption in assumptions:
+        path = assumption.get("field", "")
+        if assumption.get("approved_by") is None or path.startswith("spec."):
+            continue
+        keys = path.split(".")
+        if not keys or keys[0] not in effective:
+            continue
+        target = effective
+        for key in keys[:-1]:
+            if not isinstance(target.get(key), dict):
+                target[key] = {}
+            target = target[key]
+        target[keys[-1]] = _coerce(assumption["value"])
+    return effective
+
+
 def normalize_spec(parsed: dict, assumptions: list[dict]) -> dict:
     """원본 spec + 단위 환산(flow_lpm) + 가정값 반영. parsed_rfq 원본은 바꾸지 않습니다."""
     spec = copy.deepcopy(parsed.get("spec") or {})
@@ -379,12 +398,18 @@ def validate(parsed: dict, assumptions: list[dict]) -> tuple[list[dict], list[st
     raw.sort(key=lambda i: SEVERITY_ORDER[i["severity"]])  # 안정 정렬: 같은 심각도는 규칙 순서 유지
 
     approved = {a["field"] for a in assumptions if a.get("approved_by") is not None}
-    still_out_of_range = _range_violations(parsed, normalized)
+    effective = effective_rfq(parsed, assumptions)
+    effective["spec"] = normalized
+    still_invalid = {
+        i["field"] for i in (
+            _check_required(effective) + _check_consistency(effective) + _check_date_order(effective)
+        )
+    } | _range_violations(effective, normalized)
 
     issues = []
     for n, item in enumerate(raw, start=1):
         issue = Issue(id=f"ISS-{n:02d}", label=ISSUE_LABELS[item["type"]], **item)
-        issue.resolved = issue.field in approved and issue.field not in still_out_of_range
+        issue.resolved = issue.field in approved and issue.field not in still_invalid
         issues.append(issue.model_dump())
     return issues, policy_passed + range_passed, normalized
 

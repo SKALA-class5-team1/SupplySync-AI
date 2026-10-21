@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     HOST: str = "127.0.0.1"
     PORT: int = 8000
-    RELOAD: bool = True
+    RELOAD: bool = False
     LOG_LEVEL: str = "DEBUG"
 
     # .env에서는 JSON 배열로 작성합니다. 예: ["http://localhost:3000"]
@@ -50,11 +50,15 @@ class Settings(BaseSettings):
     TASK_TIMEOUT_SEC: float = 120.0
     # 도구 결과를 그래프 상태로 넘길 때 문자열 하나의 최대 길이
     MCP_RESULT_MAX_CHARS: int = 2000
+    # 백그라운드 명령 1건의 실행 한도. 초과하면 RUN_FAILED 이벤트로 알린다.
+    RUN_TIMEOUT_SEC: float = Field(default=270.0, gt=0, le=270)
 
     # MCP 서버 주소 (/mcp까지 포함). business-mcp 호출은 app/core/mcp_client.py, rag-mcp는 서버 준비 후 연결합니다.
     BUSINESS_MCP_URL: str = "http://127.0.0.1:8101/mcp"
     RAG_MCP_URL: str = "http://127.0.0.1:8102/mcp"
     RAG_API_DOCS_URL: str = "http://127.0.0.1:8102/docs"
+    # MCP 요청의 X-API-Key. 생략하면 기존 INTERNAL_API_KEY를 사용한다.
+    MCP_API_KEY: str = Field(default="", repr=False)
 
     # RabbitMQ: 메시지 발행/소비용 AMQP 연결 설정입니다.
     # RABBITMQ_MGMT_PORT는 관리 화면용이므로 앱 연결에는 사용하지 않습니다.

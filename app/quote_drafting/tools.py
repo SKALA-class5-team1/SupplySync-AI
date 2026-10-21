@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.core.guardrails import mask_any, mask_pii, truncate_any, truncate_text
+from app.core.mcp_auth import get_mcp_headers
 from app.core.mcp_client import BUSINESS, mcp_client
 from app.quote_drafting.harness import (
     MAX_RETRY,
@@ -39,7 +40,7 @@ _rag_client = MultiServerMCPClient(
         RAG: {
             "transport": "streamable_http",
             "url": settings.RAG_MCP_URL,
-            "headers": {"X-Internal-Api-Key": settings.INTERNAL_API_KEY},
+            "headers": get_mcp_headers(),
         },
     }
 )
@@ -124,7 +125,7 @@ async def business_get_parts_cost(
 
 
 async def business_save_quote(payload: dict[str, Any]) -> SaveQuoteResult:
-    """견적 초안(DRAFT) 저장. 쓰기라서 다시 시도하지 않는다 (사람 승인 후에만 호출)."""
+    """검증한 견적 초안(DRAFT) 저장. 응답 불명 시 중복 실행을 피하도록 재시도하지 않는다."""
     raw = await _call_tool(BUSINESS, "save_quote", payload, retry=False)
     return SaveQuoteResult.model_validate(_clean(raw))
 
@@ -132,11 +133,8 @@ async def business_save_quote(payload: dict[str, Any]) -> SaveQuoteResult:
 async def rag_search_docs(
     query: str, doc_type: str = "policy", k: int = RAG_TOP_K, deadline: Optional[float] = None
 ) -> list[DocHit]:
-    """규정 근거 검색. 필요한 필드만, 조각마다 RAG_CHUNK_MAX_CHARS로 잘라 돌려준다.
-
-    TODO: rag-mcp 레포가 비어 있어 도구 이름·입출력은 명세 예시 기준. 올라오면 확인.
-    """
-    raw = await _call_tool(RAG, "search_docs", {"query": query, "doc_type": doc_type, "k": k}, deadline=deadline)
+    """규정 근거 검색. 필요한 필드만, 조각마다 RAG_CHUNK_MAX_CHARS로 잘라 돌려준다."""
+    raw = await _call_tool(RAG, "rag_search_docs", {"query": query, "doc_type": doc_type, "k": k}, deadline=deadline)
     return [DocHit.model_validate(_clean(item, RAG_CHUNK_MAX_CHARS)) for item in raw[:k]]
 
 

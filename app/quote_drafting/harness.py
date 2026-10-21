@@ -12,7 +12,7 @@ from app.core.guardrails import mask_pii, truncate_text
 
 # --- Agent Loop 한도 (표 6-3) ---
 MAX_TURNS = 8  # 모델 호출 횟수
-TASK_TIMEOUT_SEC = 120.0  # SG3 작업 전체 (사람 승인 대기 시간 제외)
+TASK_TIMEOUT_SEC = 120.0  # SG3 견적 작성 작업 전체
 MAX_SAME_TOOL_CALLS = 3  # 같은 도구 호출 횟수
 
 # --- 호출 1회 시간 제한 ---
@@ -35,9 +35,6 @@ RESULT_MAX_CHARS = settings.MCP_RESULT_MAX_CHARS  # 도구 결과 문자열 하�
 
 # --- 견적 차수 ---
 MAX_REVISION = 4  # 견적 revision 최대 4 = SG4 수정 요청(REVISE) 최대 3회 (상위 그래프 MAX_REVISIONS와 같게)
-
-# --- Guardrails ---
-MAX_APPROVAL_INPUTS = 3  # 저장 승인 입력이 잘못 왔을 때 다시 받아 주는 횟수
 
 # --- Observability ---
 RUN_NAME = "sg3_quote_drafting"  # observability.run_config(thread_id, RUN_NAME)

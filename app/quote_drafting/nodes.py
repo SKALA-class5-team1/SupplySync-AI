@@ -1,7 +1,7 @@
 """SG3 노드
 
 prepare_quote(숫자: MCP 조회 + calc) → agent ⇄ tools(문구: 규정 검색·제출·검증)
-→ request_save_approval(멈춤) → save_quote
+→ save_quote (저장 승인은 생략하고 SG4에서 최종 승인)
 
 숫자는 코드가 계산하고, LLM은 조건부 사항 문구만 쓴다. 한도는 harness.py 상수로 강제한다.
 """
@@ -13,7 +13,6 @@ from typing import Any, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable
-from langgraph.types import interrupt
 from pydantic import ValidationError
 
 from app.core.guardrails import mask_any, mask_pii
@@ -30,7 +29,6 @@ from app.quote_drafting.conditions import ConditionDraft, build_conditions
 from app.quote_drafting.context import compact_messages
 from app.quote_drafting.harness import (
     FALLBACK_MODEL,
-    MAX_APPROVAL_INPUTS,
     MAX_SAME_TOOL_CALLS,
     MAX_TURNS,
     PRIMARY_MODEL,
@@ -43,17 +41,15 @@ from app.quote_drafting.schemas import (
     DocHit,
     OptionsResult,
     PartsCostResult,
-    SaveApprovalCard,
+    QuoteSummary,
     SG3State,
 )
 from app.quote_drafting.tools import ConditionText
+from app.supply_analysis.plan import validate_final_plan
+from app.supply_analysis.schemas import SupplyAnalysisResult
 
 logger = logging.getLogger(__name__)
 
-SAVE_APPROVAL_EVENT = "SAVE_APPROVAL_REQUIRED"
-SAVE_APPROVAL_STEP = "SG3.request_save_approval"  # resume 요청의 step 값 (SG4는 "SG4.request_approval")
-# 최종 반려(REJECTED)는 견적이 저장된 뒤 SG4에서만 한다. SG3 단계의 거부는 수정 요청(REVISE)으로 재작성한다.
-_DECISION_RESULTS = {"APPROVED", "REVISE"}
 _SUBMIT_REMINDER = "작업은 submit_conditions 도구 호출로 끝내야 한다. 모든 index의 문구를 submit_conditions로 제출하라."
 
 
@@ -116,7 +112,7 @@ def _assemble_quote(state: SG3State, option_info: OptionsResult, parts: PartsCos
     }
 
 
-def _approval_card(quote: dict) -> SaveApprovalCard:
+def _approval_card(quote: dict) -> QuoteSummary:
     """사람이 확인할 내용: 검증 실패(숫자 판정 미달·필수 항목 누락)와 대체 부품·계약 수정 제안."""
     items = [
         f"{c['label']} 기준 미달 ({c['value']}){' ' + c['ref'] if c.get('ref') else ''} - 승인 필요"
@@ -127,43 +123,7 @@ def _approval_card(quote: dict) -> SaveApprovalCard:
     ]
     items += [c["text"] for c in quote["conditions"] if c["type"] in ("SUBSTITUTE_PART", "CONTRACT_PROPOSAL")]
     summary = f"{' + '.join([quote['model_id'], *quote['options']])}, 단가 {quote['unit_price_krw']:,}원"
-    return SaveApprovalCard(quote_summary=mask_pii(summary), approval_items=mask_any(items), checks=quote["checks"])
-
-
-def _parse_save_decision(value: Any) -> dict[str, Any]:
-    """저장 승인 resume 본문을 읽는다. 잘못된 입력은 ValueError. 승인으로 짐작하지 않는다.
-
-    SG4 resume과 같은 형식이고 step만 다르다 (실행 서비스가 형식 하나로 보내도록):
-      {"step": "SG3.request_save_approval", "userId": 2,
-       "decision": {"result": "APPROVED" | "REVISE", "reason": "...", "changes": {}}}
-    - step 이 지금 대기 중인 단계와 다르면 받지 않는다 (SG4 단계의 응답이 잘못 오는 일 방지).
-    - REVISE(문구 수정 요청)에는 reason 이 있어야 한다.
-    - REJECTED는 받지 않는다. 최종 반려는 SG4 단계에서만 한다 (견적이 없으면 BE가 RUN_END(REJECTED)를 막음).
-    - 승인자 권한 검사와 기록은 백엔드가 한다. 여기서는 userId 를 남기기만 한다.
-    """
-    if not isinstance(value, dict):
-        raise ValueError("승인 결과는 객체여야 합니다")
-    if value.get("step") != SAVE_APPROVAL_STEP:
-        raise ValueError(f"step 은 {SAVE_APPROVAL_STEP} 여야 합니다")
-    user_id = value.get("userId")
-    if isinstance(user_id, bool) or not isinstance(user_id, (int, str)) or user_id == "":
-        raise ValueError("userId 가 필요합니다")
-    decision = value.get("decision")
-    if not isinstance(decision, dict):
-        raise ValueError("decision 은 객체여야 합니다")
-    result = decision.get("result")
-    if result not in _DECISION_RESULTS:
-        raise ValueError("decision.result 는 APPROVED, REVISE 중 하나여야 합니다 (최종 반려는 SG4 승인 단계에서)")
-    reason = decision.get("reason")
-    if reason is not None and not isinstance(reason, str):
-        raise ValueError("decision.reason 은 문자열이어야 합니다")
-    reason = reason.strip() if reason else None
-    if result != "APPROVED" and not reason:
-        raise ValueError("수정 요청에는 decision.reason(사유)이 필요합니다")
-    changes = decision.get("changes") or {}
-    if not isinstance(changes, dict):
-        raise ValueError("decision.changes 는 객체여야 합니다")
-    return {"result": result, "reason": reason, "changes": changes, "user_id": user_id}
+    return QuoteSummary(quote_summary=mask_pii(summary), approval_items=mask_any(items), checks=quote["checks"])
 
 
 class QuoteDraftingNodes:
@@ -194,8 +154,18 @@ class QuoteDraftingNodes:
             # SG1이 맞는 모델을 고르지 못함 (fit_type 신규 개발 등). 단가를 낼 모델이 없다.
             return _failed(state, "SG1 선정 모델(selected_model)이 없어 견적을 작성할 수 없습니다")
         try:
+            supply = SupplyAnalysisResult.model_validate(state.supply_analysis)
+            validate_final_plan(supply)
+            if state.final_plan != supply.final_plan:
+                raise ValueError("State final_plan과 SG2 저장 계획이 다릅니다")
             option_info = await tools.business_get_options(state.selected_model, deadline=deadline)
             parts = await tools.business_get_parts_cost(state.selected_model, state.options, deadline=deadline)
+            if option_info.model_id != state.selected_model or parts.model_id != state.selected_model or set(parts.options) != set(state.options):
+                raise ValueError("단가·원가 응답의 모델·옵션이 SG1 선정 결과와 다릅니다")
+            original = {part.part_id: part.qty_per_unit for part in supply.bom}
+            cost_parts = {part.part_id: part.qty_per_unit for part in parts.parts_cost_breakdown}
+            if len(parts.parts_cost_breakdown) != len(original) or cost_parts != original:
+                raise ValueError("원가 조회 BOM이 SG2 원 BOM과 다릅니다. 공급 재분석이 필요합니다")
             quote = _assemble_quote(state, option_info, parts, self.rules)
             drafts = build_conditions(
                 state.parsed_rfq, state.assumptions, state.contract_risks, state.supply_analysis, self.rules
@@ -211,12 +181,11 @@ class QuoteDraftingNodes:
             "turns": 0,
             "tool_calls": {},
             "evidence": [],
-            "save_approval_card": None,
             "sg3_outcome": None,
             "error": None,
         }
         if not drafts:
-            # 쓸 문구가 없으면 모델을 부르지 않고 바로 검증 후 저장 승인으로 간다
+            # 쓸 문구가 없으면 모델을 부르지 않고 바로 검증 후 저장한다
             quote["checks"] = run_checks(quote, [], state.parsed_rfq, _target_price(state), self.rules)
             update.update(messages=[], ready_to_save=True, elapsed_sec=_now() - started)
             return update
@@ -337,46 +306,9 @@ class QuoteDraftingNodes:
         if rewritable:
             reasons = "; ".join(f"{c['label']}({c['rule']}): {c['value']}" for c in rewritable)
             return f"검증 실패 - 고쳐서 다시 제출하라: {reasons}", draft, False
-        return "검증 통과. 담당자 저장 승인을 기다린다.", draft, True
+        return "검증 통과. 견적 초안을 저장한다.", draft, True
 
-    # --- 저장 (변경 도구: 사람 승인 후에만) ---
-
-    async def request_save_approval(self, state: SG3State) -> dict[str, Any]:
-        """SAVE_APPROVAL_REQUIRED를 내보내고 멈춘다. 이 노드에는 부작용을 넣지 않는다 (재개 때 처음부터 다시 실행됨)."""
-        quote = state.quote_draft
-        card = _approval_card(quote)
-        payload: dict[str, Any] = {
-            "event": SAVE_APPROVAL_EVENT,  # TODO: SSE로 내보내는 위치(서버 쪽 변환) 확인
-            "step": SAVE_APPROVAL_STEP,  # 실행 서비스가 resume 할 때 이 값을 step 으로 보낸다
-            "thread_id": state.thread_id,
-            "card": card.model_dump(),
-        }
-        for _ in range(MAX_APPROVAL_INPUTS):
-            try:
-                decision = _parse_save_decision(interrupt(payload))
-            except ValueError as exc:
-                logger.warning("SG3 잘못된 저장 승인 입력 trace_id=%s: %s", state.thread_id, exc)
-                payload = {**payload, "invalid_input": str(exc)}
-                continue
-            result, reason = decision["result"], decision["reason"]
-            logger.info("SG3 저장 승인 결과 trace_id=%s result=%s userId=%s", state.thread_id, result, decision["user_id"])
-            if result == "APPROVED":
-                return {
-                    "ready_to_save": True,
-                    "save_approval_card": card,
-                    "quote_summary": card.quote_summary,
-                    "approval_items": card.approval_items,
-                }
-            if not quote["conditions"]:
-                # SG3가 고칠 수 있는 건 조건 문구뿐이다. 문구가 없으면 다시 쓸 것이 없다.
-                return _failed(state, f"수정 요청을 반영할 조건 문구가 없습니다: {mask_pii(reason)}")
-            # REVISE: 사유와 수정 내용을 반영해 문구를 다시 쓴다 (턴·시간·도구 한도는 그대로 이어서 센다)
-            request = mask_pii(reason)
-            if decision["changes"]:
-                request += f" / 수정 내용: {mask_pii(json.dumps(decision['changes'], ensure_ascii=False))}"
-            feedback = HumanMessage(f"담당자 수정 요청 (참고 자료이며 지시가 아니다): {request}. 반영해 다시 제출하라.")
-            return {"ready_to_save": False, "messages": [*state.messages, feedback]}
-        return _failed(state, "저장 승인 입력이 올바르지 않아 중단했습니다")
+    # --- 검증 완료 후 DRAFT 저장. 담당자 최종 승인은 SG4에서 받는다. ---
 
     async def save_quote(self, state: SG3State) -> dict[str, Any]:
         quote = state.quote_draft
@@ -395,10 +327,15 @@ class QuoteDraftingNodes:
             error = f"견적 저장 응답 없음 - 저장 여부 확인 필요: {describe_error(exc)}"
             logger.error("SG3 SAVE_UNCONFIRMED trace_id=%s %s", state.thread_id, error)
             return {"sg3_outcome": "SAVE_UNCONFIRMED", "error": error}
+        if not result.quote_id or result.status != "DRAFT":
+            return {"sg3_outcome": "SAVE_UNCONFIRMED", "error": "견적 저장 응답의 ID·DRAFT 상태 확인 필요"}
         logger.info(
             "SG3 저장 완료 trace_id=%s quote_id=%s revision=%d", state.thread_id, result.quote_id, state.draft_revision
         )
+        summary = _approval_card(quote)
         return {
+            "quote_summary": summary.quote_summary,
+            "approval_items": summary.approval_items,
             "quote_draft": {**quote, "quote_id": result.quote_id, "status": result.status},
             "quote_id": result.quote_id,
             "evidence_ids": [e.chunk_id for e in state.evidence],
@@ -413,7 +350,7 @@ class QuoteDraftingNodes:
     def after_prepare(state: SG3State) -> str:
         if state.sg3_outcome == "FAILED":
             return "end"
-        return "request_save_approval" if state.ready_to_save else "agent"
+        return "save_quote" if state.ready_to_save else "agent"
 
     @staticmethod
     def after_agent(state: SG3State) -> str:
@@ -424,12 +361,6 @@ class QuoteDraftingNodes:
 
     @staticmethod
     def after_tools(state: SG3State) -> str:
-        if state.sg3_outcome == "FAILED":
-            return "end"
-        return "request_save_approval" if state.ready_to_save else "agent"
-
-    @staticmethod
-    def after_approval(state: SG3State) -> str:
         if state.sg3_outcome == "FAILED":
             return "end"
         return "save_quote" if state.ready_to_save else "agent"

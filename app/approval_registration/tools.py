@@ -2,7 +2,7 @@
 approval_registration 도메인의 MCP 도구 호출 (business-mcp, rag-mcp).
 
 - 서버 주소: 설정(BUSINESS_MCP_URL, RAG_MCP_URL). 전송 방식은 Streamable HTTP.
-- 인증: 모든 요청에 X-Internal-Api-Key 헤더(설정 INTERNAL_API_KEY). 없거나 틀리면 401.
+- 인증: 모든 MCP 요청에 공통 X-API-Key, X-Internal-Api-Key 헤더를 전달한다.
 - 도구 이름은 서버가 정한 이름 그대로 부른다 (check_parts_supply 등). business_ 접두어는 Agent 쪽
   MCP 클라이언트가 붙이는 이름이라 여기서는 쓰지 않는다.
 - 중복 등록 방지(Idempotency-Key)는 business-mcp 서버가 백엔드로 보낼 때 붙인다. 이쪽은 보내지 않는다.
@@ -17,6 +17,7 @@ from typing import Any, Optional, Union
 from app.approval_registration.schemas import DocHit, RegisterResult, SupplyResult
 from app.core.config import settings
 from app.core.guardrails import mask_pii, truncate_any, truncate_text
+from app.core.mcp_auth import get_mcp_headers
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ def _server_url(server: str) -> str:
 
 
 def _build_headers() -> dict[str, str]:
-    return {"X-Internal-Api-Key": settings.INTERNAL_API_KEY}
+    return get_mcp_headers()
 
 
 def _parse_result(result: Any) -> Any:
@@ -153,14 +154,11 @@ async def business_register_quote(quote_id: Union[int, str], thread_id: str) -> 
 async def rag_search_docs(
     query: str, doc_type: Optional[str] = None, k: int = 4
 ) -> list[DocHit]:
-    """VectorDB doc_chunks 조회 (rag-mcp search_docs). SG4에서는 승인 안내용 규정 근거를 찾는다.
-
-    TODO: rag-mcp 레포가 비어 있어 도구 이름·입출력은 명세 예시 기준. 올라오면 확인.
-    """
+    """VectorDB doc_chunks 조회. SG4에서는 승인 안내용 규정 근거를 찾는다."""
     arguments: dict[str, Any] = {"query": query, "k": k}
     if doc_type:
         arguments["doc_type"] = doc_type
-    raw = await _call_tool("rag", "search_docs", arguments)
+    raw = await _call_tool("rag", "rag_search_docs", arguments)
     # 규정 본문이 길 수 있어 상태로 넘기기 전에 길이를 자른다
     return [
         DocHit.model_validate(truncate_any(item, settings.MCP_RESULT_MAX_CHARS)) for item in raw

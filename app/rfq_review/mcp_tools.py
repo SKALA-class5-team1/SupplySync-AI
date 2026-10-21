@@ -5,8 +5,8 @@ SG1이 쓰는 MCP 도구 호출과 응답 변환.
 백엔드 응답 필드명이 바뀌면 이 파일의 응답 모델만 고치면 됩니다.
 
 - business-mcp: get_rfq_content, get_models, get_options, save_review
-- rag-mcp: search_docs
-- 두 서버 모두 X-Internal-Api-Key 헤더(.env의 INTERNAL_API_KEY)로 인증합니다.
+- rag-mcp: rag_search_docs
+- 두 서버 모두 공통 MCP 인증 헤더(X-API-Key, X-Internal-Api-Key)를 사용합니다.
 - 연결은 함수 호출 시점에 엽니다. 서버 시작이나 import 시점에는 연결하지 않습니다.
 """
 import asyncio
@@ -20,6 +20,7 @@ from mcp.types import CallToolResult, TextContent
 from pydantic import BaseModel, ConfigDict
 
 from app.core.config import settings
+from app.core.mcp_auth import get_mcp_headers
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,7 @@ class SaveReviewResult(_Response):
 # 공통 호출
 # ---------------------------------------------------------------------------
 def _client() -> MultiServerMCPClient:
-    headers = {"X-Internal-Api-Key": settings.INTERNAL_API_KEY}
+    headers = get_mcp_headers()
     return MultiServerMCPClient(
         {
             BUSINESS: {"transport": "streamable_http", "url": settings.BUSINESS_MCP_URL, "headers": headers},
@@ -203,5 +204,5 @@ async def save_review(payload: dict) -> SaveReviewResult:
 
 
 async def search_docs(query: str, doc_type: str, k: int = 2) -> list[DocChunk]:
-    data = await _call(RAG, "search_docs", {"query": query, "doc_type": doc_type, "k": k})
+    data = await _call(RAG, "rag_search_docs", {"query": query, "doc_type": doc_type, "k": k})
     return [DocChunk.model_validate(c) for c in _as_list(data, "results")]

@@ -15,6 +15,7 @@ from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from app.core.config import settings
+from app.core.mcp_auth import get_mcp_headers
 
 BUSINESS = "business"
 
@@ -24,7 +25,7 @@ mcp_client = MultiServerMCPClient(
         BUSINESS: {
             "transport": "streamable_http",
             "url": settings.BUSINESS_MCP_URL,
-            "headers": {"X-Internal-Api-Key": settings.INTERNAL_API_KEY},
+            "headers": get_mcp_headers(),
         },
     },
     tool_name_prefix=True,
