@@ -19,7 +19,7 @@ from app.approval_registration.schemas import ApprovalCard, Sg4Outcome, SupplyRe
 
 logger = logging.getLogger(__name__)
 
-MAX_REVISIONS = 3  # 반려 후 재작성 허용 횟수 (무한 반복 방지)
+MAX_REVISIONS = 4  # 견적 revision 최대 4 = 수정 요청(REVISE) 최대 3회 (MCP 연동 가이드 2절)
 
 
 class SupervisorState(BaseModel):
@@ -101,7 +101,7 @@ def _after_sg4(state: SupervisorState) -> str:
     if state.sg4_outcome == "REWRITE_REQUIRED":
         if state.draft_revision < MAX_REVISIONS:
             return "sg3_quote_drafting"
-        logger.warning("반려가 %d회를 넘어 종료 thread_id=%s", MAX_REVISIONS, state.thread_id)
+        logger.warning("견적 revision 이 %d 에 도달해 종료 thread_id=%s", MAX_REVISIONS, state.thread_id)
     # REJECTED: 최종 반려. SG3 로 돌리지 않고 종료한다 (결과값 REJECTED 를 종료 이벤트에 담는다).
     # REGISTERED: 전체 완료(DONE).
     # STOCK_REVIEW_REQUIRED: DONE 이 아니다. 후속 정책(SG2 복귀 등)은 팀 합의 전이라 여기서 멈춘다.

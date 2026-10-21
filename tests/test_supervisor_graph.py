@@ -119,7 +119,7 @@ if __name__ == "__main__":
     test_final_reject_ends_without_sg3()
     print("OK: 최종 반려(REJECTED)는 SG3 로 돌아가지 않고 종료")
     test_reject_limit()
-    print(f"OK: 반려가 {MAX_REVISIONS}회 쌓이면 종료")
+    print(f"OK: 수정 요청이 쌓여 revision {MAX_REVISIONS} 에 도달하면 종료")
     test_stock_shortage_does_not_loop_to_sg3()
     print("OK: 재고 부족은 SG3 로 돌아가지 않고 등록도 하지 않음")
     test_invalid_resume_keeps_waiting_in_sg4()
