@@ -1,0 +1,31 @@
+{
+  "$comment": "Subgraph 1 → Subgraph 2/3 으로 넘기는 state 정답",
+  "rfq_id": "HB-EV7-EWP-001",
+  "selected_model": "EWP-12-B",
+  "options": ["OPT-HT", "OPT-IP9K"],
+  "fit_type": "파생 사양",
+  "quoted_price_krw": 37300,
+  "target_price_krw": 38000,
+  "demand": {
+    "sample_qty": 2000,
+    "sample_due_date": "2026-12-15",
+    "eau": 120000,
+    "sop_date": "2027-09-01"
+  },
+  "assumptions": [
+    { "field": "spec.flow", "value": "22 L/min", "approved_by": "영업 담당" },
+    { "field": "spec.connector", "value": "표준 4핀", "approved_by": "영업 담당" },
+    { "field": "spec.coolant", "value": "에틸렌글리콜 50%", "approved_by": "영업 담당" }
+  ],
+  "customer_questions": [
+    "유량 단위가 L/min이 맞는지 확인 부탁드립니다. (사양서 표기: 22 L/h)",
+    "커넥터 사양(핀 수, 형상)을 알려주십시오.",
+    "사용 냉각수 종류를 알려주십시오.",
+    "총 공급 물량 900,000개와 연간 120,000개 × 6년(720,000개)이 다릅니다. 어느 쪽이 맞는지 확인 부탁드립니다.",
+    "PPAP 완료일(2027-10-15)이 양산 시작일(2027-09-01)보다 늦습니다. 일정 확인 부탁드립니다."
+  ],
+  "contract_risks": [
+    { "item": "품질 보증 5년/150,000km", "limit": "3년/100,000km", "ref": "제12조" },
+    { "item": "지연 배상 상한 없음",     "limit": "계약금액 10%",   "ref": "제13조" }
+  ]
+}
