@@ -40,7 +40,7 @@ class SupervisorState(BaseModel):
     quote_summary: str = ""
     approval_items: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
-    draft_revision: int = 0
+    draft_revision: int = 1  # SG3 가 이번에 저장할 견적 revision. 수정 요청 때 prepare_rewrite 가 +1 한다
 
     # --- SG4 가 채우는 값 ---
     approval_card: Optional[ApprovalCard] = None
@@ -55,6 +55,7 @@ class SupervisorState(BaseModel):
     sg4_outcome: Optional[Sg4Outcome] = None
     registered_quote_id: Optional[Union[int, str]] = None
     registration_status: Optional[str] = None
+    registration_outcome: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -81,7 +82,7 @@ async def sg3_quote_drafting(state: SupervisorState) -> dict[str, Any]:
     견적 초안을 DRAFT 로 저장하고 quote_id 를 돌려주는 자리다. 반려로 돌아왔다면
     state.reject_reason 을 반영해 다시 작성해야 한다.
     """
-    revision = state.draft_revision + 1
+    revision = state.draft_revision  # 올리는 일은 상위 그래프(prepare_rewrite)가 한다
     summary = "EWP-12-B + OPT-HT + OPT-IP9K, 단가 37,300원"
     if state.reject_reason:
         summary += f" (수정 요청 반영: {state.reject_reason})"
@@ -93,6 +94,15 @@ async def sg3_quote_drafting(state: SupervisorState) -> dict[str, Any]:
     }
 
 
+async def prepare_rewrite(state: SupervisorState) -> dict[str, Any]:
+    """수정 요청(REVISE)으로 SG3 에 돌려보내기 전에 revision 을 1 올린다.
+
+    올리지 않고 같은 revision 으로 보내면 백엔드가 이전 견적을 그대로 돌려준다 (MCP 연동 가이드).
+    SG3 는 state.draft_revision 값을 revision 으로 save_quote 해야 한다.
+    """
+    return {"draft_revision": state.draft_revision + 1}
+
+
 # ----------------------------------------------------------------------
 # 분기
 # ----------------------------------------------------------------------
@@ -100,7 +110,7 @@ def _after_sg4(state: SupervisorState) -> str:
     """SG4 결과에 따라 갈 곳을 정한다. 이동은 규칙으로만 정하고 LLM 판단은 쓰지 않는다."""
     if state.sg4_outcome == "REWRITE_REQUIRED":
         if state.draft_revision < MAX_REVISIONS:
-            return "sg3_quote_drafting"
+            return "prepare_rewrite"
         logger.warning("견적 revision 이 %d 에 도달해 종료 thread_id=%s", MAX_REVISIONS, state.thread_id)
     # REJECTED: 최종 반려. SG3 로 돌리지 않고 종료한다 (결과값 REJECTED 를 종료 이벤트에 담는다).
     # REGISTERED: 전체 완료(DONE).
@@ -116,6 +126,7 @@ def build_supervisor_graph() -> StateGraph:
     graph.add_node("sg1_rfq_review", sg1_rfq_review)
     graph.add_node("sg2_supply_analysis", sg2_supply_analysis)
     graph.add_node("sg3_quote_drafting", sg3_quote_drafting)
+    graph.add_node("prepare_rewrite", prepare_rewrite)
     graph.add_node("sg4_approval_registration", build_sg4_graph().compile())
 
     graph.add_edge(START, "sg1_rfq_review")
@@ -123,6 +134,7 @@ def build_supervisor_graph() -> StateGraph:
     graph.add_edge("sg2_supply_analysis", "sg3_quote_drafting")
     graph.add_edge("sg3_quote_drafting", "sg4_approval_registration")
     graph.add_conditional_edges(
-        "sg4_approval_registration", _after_sg4, ["sg3_quote_drafting", END]
+        "sg4_approval_registration", _after_sg4, ["prepare_rewrite", END]
     )
+    graph.add_edge("prepare_rewrite", "sg3_quote_drafting")
     return graph
