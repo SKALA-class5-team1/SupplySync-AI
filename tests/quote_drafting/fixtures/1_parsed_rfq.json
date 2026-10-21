@@ -1,0 +1,56 @@
+{
+  "rfq_id": "HB-EV7-EWP-001",
+  "customer": "한별모터스",
+  "project": "HB-EV7",
+  "item": "전동식 워터펌프 (EWP, 12V)",
+  "issue_date": "2026-10-12",
+  "quote_due_date": "2026-10-30",
+  "volume": {
+    "eau": 120000,
+    "supply_years": 6,
+    "lifetime_volume": 900000,
+    "sample_qty": 2000,
+    "sample_due_date": "2026-12-15"
+  },
+  "schedule": {
+    "sop_date": "2027-09-01",
+    "ppap_date": "2027-10-15"
+  },
+  "spec": {
+    "flow": { "value": 22, "unit": "L/h" },
+    "head_kpa": 70,
+    "voltage_min": 9,
+    "voltage_max": 16,
+    "temp_min": -40,
+    "temp_max": 120,
+    "ip_rating": "IP6K9K",
+    "noise_db_max": 45,
+    "comm": "LIN",
+    "max_size_mm": { "l": 120, "w": 100, "h": 95 },
+    "max_weight_kg": 0.8,
+    "connector": null,
+    "coolant": null
+  },
+  "quality": {
+    "certifications": ["IATF 16949", "IMDS"],
+    "ppap_level": 3
+  },
+  "delivery": {
+    "plant": "한별모터스 울산 2공장",
+    "incoterms": "DAP",
+    "packing": "회수형 플라스틱 박스, 박스당 20개"
+  },
+  "commercial": {
+    "target_price_krw": 38000,
+    "annual_cr_pct": 3,
+    "payment_days": 60,
+    "payment_terms": "월말 마감, 익월 60일 현금",
+    "currency": "KRW"
+  },
+  "contract": {
+    "warranty_years": 5,
+    "warranty_km": 150000,
+    "penalty_cap_pct": null,
+    "eol_notice_months": 12
+  }
+}
