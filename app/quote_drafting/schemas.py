@@ -82,8 +82,7 @@ class SaveApprovalCard(BaseModel):
 #   DRAFT_SAVED       견적 초안 저장 완료 -> SG4 승인으로
 #   FAILED            한도 초과, 도구·모델 실패, 저장 거절(409 등)
 #   SAVE_UNCONFIRMED  저장 호출의 응답을 못 받음. 실제로는 저장됐을 수 있어 사람이 확인해야 함
-#   REJECTED          저장 승인 단계에서 담당자가 반려. 저장하지 않고 종료
-Sg3Outcome = Literal["DRAFT_SAVED", "FAILED", "SAVE_UNCONFIRMED", "REJECTED"]
+Sg3Outcome = Literal["DRAFT_SAVED", "FAILED", "SAVE_UNCONFIRMED"]
 
 
 class SG3State(BaseModel):
