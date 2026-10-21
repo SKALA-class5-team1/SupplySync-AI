@@ -196,6 +196,7 @@ async def register_quote(state: SG4State) -> dict[str, Any]:
     return {
         "registered_quote_id": result.quote_id,
         "registration_status": result.status,
+        "registration_outcome": result.outcome,
         "sg4_outcome": "REGISTERED",
     }
 
