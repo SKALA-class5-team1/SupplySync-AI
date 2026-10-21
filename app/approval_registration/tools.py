@@ -153,14 +153,11 @@ async def business_register_quote(quote_id: Union[int, str], thread_id: str) -> 
 async def rag_search_docs(
     query: str, doc_type: Optional[str] = None, k: int = 4
 ) -> list[DocHit]:
-    """VectorDB doc_chunks 조회 (rag-mcp search_docs). SG4에서는 승인 안내용 규정 근거를 찾는다.
-
-    TODO: rag-mcp 레포가 비어 있어 도구 이름·입출력은 명세 예시 기준. 올라오면 확인.
-    """
+    """VectorDB doc_chunks 조회. SG4에서는 승인 안내용 규정 근거를 찾는다."""
     arguments: dict[str, Any] = {"query": query, "k": k}
     if doc_type:
         arguments["doc_type"] = doc_type
-    raw = await _call_tool("rag", "search_docs", arguments)
+    raw = await _call_tool("rag", "rag_search_docs", arguments)
     # 규정 본문이 길 수 있어 상태로 넘기기 전에 길이를 자른다
     return [
         DocHit.model_validate(truncate_any(item, settings.MCP_RESULT_MAX_CHARS)) for item in raw

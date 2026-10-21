@@ -108,8 +108,9 @@ class SG3State(BaseModel):
         description="SG1 물량·일정 {eau, sample_qty, sample_due_date, sop_date, target_price_krw, quote_due_date}",
     )
     supply_analysis: dict[str, Any] = Field(
-        description="SG2 결과. TODO: SG2가 state에 넣을 키·형식 합의 전이라 05_expected/5_sg2_supply.json 구조로 받는다"
+        description="SG2 SupplyAnalysisResult 전체와 demand. 선택 대안·부족분·원 BOM을 보존한다"
     )
+    final_plan: dict[str, int] = Field(description="SG2의 전체 최종 부품 ID → 수량. 원 BOM과 합치지 않는다")
     issue_date: Optional[str] = Field(default=None, description="발행일 (YYYY-MM-DD). 없으면 오늘")
 
     # --- SG4·상위 그래프와 주고받는 값 (SupervisorState·SG4State와 같은 이름) ---

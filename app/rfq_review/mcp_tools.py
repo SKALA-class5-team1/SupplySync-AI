@@ -5,7 +5,7 @@ SG1이 쓰는 MCP 도구 호출과 응답 변환.
 백엔드 응답 필드명이 바뀌면 이 파일의 응답 모델만 고치면 됩니다.
 
 - business-mcp: get_rfq_content, get_models, get_options, save_review
-- rag-mcp: search_docs
+- rag-mcp: rag_search_docs
 - 두 서버 모두 X-Internal-Api-Key 헤더(.env의 INTERNAL_API_KEY)로 인증합니다.
 - 연결은 함수 호출 시점에 엽니다. 서버 시작이나 import 시점에는 연결하지 않습니다.
 """
@@ -203,5 +203,5 @@ async def save_review(payload: dict) -> SaveReviewResult:
 
 
 async def search_docs(query: str, doc_type: str, k: int = 2) -> list[DocChunk]:
-    data = await _call(RAG, "search_docs", {"query": query, "doc_type": doc_type, "k": k})
+    data = await _call(RAG, "rag_search_docs", {"query": query, "doc_type": doc_type, "k": k})
     return [DocChunk.model_validate(c) for c in _as_list(data, "results")]

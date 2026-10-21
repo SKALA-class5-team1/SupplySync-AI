@@ -77,7 +77,7 @@ class FakeMcp:
         self.calls.append((server, name, arguments))
         if name == "check_parts_supply":
             return self.supply
-        if name == "search_docs":
+        if name == "rag_search_docs":
             return RAG_SAMPLE
         if name == "register_quote":
             return REGISTER_SAMPLE

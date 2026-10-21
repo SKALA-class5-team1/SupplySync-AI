@@ -9,8 +9,6 @@ import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
-from app.quote_drafting.calc import calc_substitute_extra_cost
-
 # 대체 부품 조건의 근거 조항: 제20조(사용 사실 명시), 제21조(원가 증가분 별도 표시)
 SUBSTITUTE_PART_REF = "제20조, 제21조"
 
@@ -80,14 +78,14 @@ def build_conditions(
 
     # 2) SG2 추천안이 대체 부품이면 사용 사실과 추가 비용 (다른 대안은 견적 조건이 아니다)
     if supply_analysis.get("recommended_alt") == "SUBSTITUTE_PART":
-        alt = next(a for a in supply_analysis["alternatives"] if a["type"] == "SUBSTITUTE_PART")
-        shortage = next(
-            (s for s in supply_analysis.get("shortages", []) if s["part_id"] == alt["target_part_id"]), {}
-        )
-        qty = alt["covered_qty"]
-        extra_cost = calc_substitute_extra_cost(qty, alt["unit_cost_diff_krw"])
-        drafts.append(
-            ConditionDraft(
+        selected = supply_analysis["selected_alternative"]
+        shortages = {s["part"]: s for s in supply_analysis["shortages"]}
+        original_parts = {p["part_id"]: p for p in supply_analysis["bom"]}
+        # 후보 목록의 첫 대안이 아니라 SG2가 실제 선택한 모든 대체 부품을 사용한다.
+        for alt in selected["parts"]:
+            qty = shortages[alt["part_id"]]["short_qty"]
+            extra_cost = alt["extra_cost_krw"]
+            drafts.append(ConditionDraft(
                 condition={
                     "type": "SUBSTITUTE_PART",
                     "text": "",
@@ -99,15 +97,14 @@ def build_conditions(
                 facts={
                     "sample_qty": supply_analysis["demand"]["sample_qty"],
                     "qty": qty,
-                    "original_part_name": shortage.get("part_name"),
+                    "original_part_name": original_parts[alt["part_id"]]["part_name"],
                     "substitute_part_id": alt["substitute_part_id"],
                     "substitute_supplier": alt.get("substitute_supplier"),
                     "extra_cost_krw": extra_cost,
                     "ref": SUBSTITUTE_PART_REF,
                 },
                 query=SUBSTITUTE_PART_REF.replace(",", ""),
-            )
-        )
+            ))
 
     # 3) SG1 계약 리스크 → 사내 한도로 수정 제안
     for risk in contract_risks:

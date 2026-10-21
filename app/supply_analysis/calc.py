@@ -154,7 +154,8 @@ def build_alternatives(
             delay_days=max(0, (candidate.usable_date - due_date).days),
             on_time_qty=part.required_qty if on_time and not blockers else part.available,
             delayed_qty=0 if on_time and not blockers else part.short_qty,
-            substitute_part_id=candidate.substitute_part_id, usable_date=candidate.usable_date,
+            substitute_part_id=candidate.substitute_part_id, substitute_supplier=candidate.supplier,
+            usable_date=candidate.usable_date,
             reason="; ".join(blockers) if blockers else f"검증 {candidate.validation_days}일 후 대체 부품 {part.short_qty}개 적용, 추가 비용 {part.short_qty * candidate.unit_cost_diff_krw:,}원",
             constraints=blockers or ["검증 시험 통과 후 생산 투입", "대체 적용 사실과 추가 비용을 견적 조건에 별도 명시"],
         ))

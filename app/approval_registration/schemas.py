@@ -72,7 +72,7 @@ class ApprovalCard(BaseModel):
 #   REGISTERED            견적 등록 완료
 #   REWRITE_REQUIRED      수정 요청(REVISE) -> 상위 그래프가 SG3 로 돌려 보낸다
 #   REJECTED              최종 반려 -> 재작성 없이 종료
-#   STOCK_REVIEW_REQUIRED 승인 뒤 재고가 부족해 등록 차단. 다음 단계(SG2 복귀 등)는 팀 합의 필요
+#   STOCK_REVIEW_REQUIRED 승인 뒤 재고 부족 → 상위 그래프에서 SG2 재분석·견적 재승인
 #   INVALID_APPROVAL      승인 입력이 계속 잘못 와서 중단
 Sg4Outcome = Literal[
     "REGISTERED", "REWRITE_REQUIRED", "REJECTED", "STOCK_REVIEW_REQUIRED", "INVALID_APPROVAL", "FAILED"
@@ -89,7 +89,7 @@ class SG4State(BaseModel):
     quote_id: Union[int, str] = Field(description="SG3 save_quote(DRAFT)가 돌려준 견적 번호")
     final_plan: dict[str, int] = Field(
         description="SG2가 정한 최종 조달 계획 (부품 코드 -> 수량). 승인 후 이 수량으로 재고를 다시 확인한다",
-        examples=[{"P-MCU-G1": 1500, "P-MCU-G1-ALT": 500}],
+        examples=[{"P-MCU-G1": 1500, "P-MCU-G1-ALT": 500, "P-CON-4P": 2000, "P-MTR-BL12": 2000}],
     )
     due_date: str = Field(description="고객 납기 (YYYY-MM-DD)", examples=["2026-12-15"])
     base_date: Optional[str] = Field(default=None, description="검토 기준일 (없으면 서버가 오늘로 계산)")

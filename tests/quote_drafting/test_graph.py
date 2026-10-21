@@ -51,10 +51,12 @@ def _sg1_state() -> dict:
 
 
 def _input(**overrides) -> dict:
+    supply = _load("5_sg2_supply")
     return {
         "thread_id": THREAD_ID,
         **_sg1_state(),
-        "supply_analysis": _load("5_sg2_supply"),
+        "supply_analysis": supply,
+        "final_plan": supply["final_plan"],
         "issue_date": "2026-10-19",
         **overrides,
     }
@@ -109,7 +111,7 @@ class FakeMcp:
                      "cost_krw": self.part_cost[p]} for p in parts]
             return {"model_id": arguments["model_id"], "options": arguments["options"],
                     "parts_cost_krw": sum(r["cost_krw"] for r in rows), "parts_cost_breakdown": rows}
-        if name == "search_docs":
+        if name == "rag_search_docs":
             hit = self.chunks.get(arguments["query"])
             return [hit] if hit else []
         if name == "save_quote":
@@ -306,7 +308,10 @@ def test_no_conditions_skips_model(monkeypatch):
     first = _run(app, _input(
         assumptions=[],
         contract_risks=[],
-        supply_analysis={**base["supply_analysis"], "recommended_alt": None},
+        supply_analysis={**base["supply_analysis"], "recommended_alt": None,
+                         "selected_alternative": None, "shortages": [],
+                         "final_plan": {p["part_id"]: p["required_qty"] for p in base["supply_analysis"]["bom"]}},
+        final_plan={p["part_id"]: p["required_qty"] for p in base["supply_analysis"]["bom"]},
     ))
     _interrupt(first)
     assert llm.received == []
@@ -317,7 +322,7 @@ def test_no_conditions_skips_model(monkeypatch):
 
 
 def test_tool_error_returned_as_tool_message(monkeypatch):
-    mcp = FakeMcp(failures={"search_docs": [tools.ToolError("rag-mcp 검색 실패")]})
+    mcp = FakeMcp(failures={"rag_search_docs": [tools.ToolError("rag-mcp 검색 실패")]})
     app, _, llm, _ = _setup(monkeypatch, mcp=mcp, script=[search("제12조"), submit(GOOD_TEXTS)])
     _interrupt(_run(app, _input()))
 
@@ -357,7 +362,7 @@ def test_same_tool_limit_fails(monkeypatch):
     app, mcp, _, _ = _setup(monkeypatch, script=[search(f"검색{i}") for i in range(MAX_SAME_TOOL_CALLS + 1)])
     out = _run(app, _input())
     assert out["sg3_outcome"] == "FAILED" and "같은 도구(search_policy_docs)" in out["error"]
-    assert mcp.names().count("search_docs") == MAX_SAME_TOOL_CALLS
+    assert mcp.names().count("rag_search_docs") == MAX_SAME_TOOL_CALLS
 
 
 def test_task_timeout_fails(monkeypatch):

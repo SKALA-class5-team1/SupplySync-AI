@@ -141,6 +141,7 @@ class Alternative(BaseModel):
     on_time_qty: Quantity = Field(description="정시 확보 수량", examples=[2000])
     delayed_qty: Quantity = Field(description="지연 또는 일정 미확정 수량", examples=[0])
     substitute_part_id: str | None = Field(default=None, description="선택한 대체 부품", examples=["P-MCU-G1-ALT"])
+    substitute_supplier: str | None = Field(default=None, description="대체 부품 공급사 (견적 조건에 전달)")
     usable_date: date | None = Field(default=None, description="부족분 사용 가능일", examples=["2026-11-02"])
     reason: str = Field(description="계산·문서에 근거한 설명", examples=["검증 완료 후 납기 내 500개 공급 가능"])
     constraints: list[str] = Field(default_factory=list, description="실행 조건 또는 불가 사유", examples=[["검증 시험 통과 후 생산 투입", "추가 비용은 견적 조건에 별도 표시"]])

@@ -41,7 +41,7 @@ async def _run(fake, inp):
 
 def test_card_masks_pii():
     async def fake(server, name, arguments):
-        if name == "search_docs":
+        if name == "rag_search_docs":
             return []
         if name == "check_parts_supply":
             return SUPPLY_SAMPLE
@@ -56,7 +56,7 @@ def test_card_masks_pii():
 
 def test_recheck_failure_is_failed():
     async def fake(server, name, arguments):
-        if name == "search_docs":
+        if name == "rag_search_docs":
             return []
         raise RuntimeError("연결 실패 010-9999-8888")
     res = asyncio.run(_run(fake, BASE_INPUT))
@@ -65,7 +65,7 @@ def test_recheck_failure_is_failed():
 
 def test_register_failure_is_failed():
     async def fake(server, name, arguments):
-        if name == "search_docs":
+        if name == "rag_search_docs":
             return []
         if name == "check_parts_supply":
             return SUPPLY_SAMPLE
