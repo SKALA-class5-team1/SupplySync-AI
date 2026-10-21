@@ -193,6 +193,20 @@ def test_invalid_resume_is_not_treated_as_approval():
     asyncio.run(run())
 
 
+def test_stale_approval_for_other_quote_is_not_accepted():
+    async def run():
+        app, cfg, _, fake = await _start(SUPPLY_SAMPLE)
+        stale = {**approve(), "quote_id": "Q-OLD-001"}  # 예전 견적에 대한 승인
+        again = await app.ainvoke(Command(resume=stale), cfg)
+        assert "__interrupt__" in again, "다른 견적의 승인으로 진행되면 안 된다"
+        assert "quote_id" in again["__interrupt__"][0].value["invalid_input"]
+        assert "register_quote" not in fake.names()
+        same = {**approve(), "quote_id": BASE_INPUT["quote_id"]}
+        done = await app.ainvoke(Command(resume=same), cfg)
+        assert done["sg4_outcome"] == "REGISTERED"
+    asyncio.run(run())
+
+
 def test_invalid_then_valid_resume_continues():
     async def run():
         app, cfg, _, fake = await _start(SUPPLY_SAMPLE)
@@ -225,6 +239,7 @@ if __name__ == "__main__":
     print("OK: 반려되면 사유를 남기고 재고 확인·등록 없이 끝남")
     test_invalid_resume_is_not_treated_as_approval()
     print("OK: 잘못된 승인 입력은 승인으로 보지 않고, 계속 틀리면 중단")
+    test_stale_approval_for_other_quote_is_not_accepted()
     test_invalid_then_valid_resume_continues()
     print("OK: 잘못된 입력 뒤 올바른 승인이 오면 이어서 진행")
     test_reject_needs_reason()
