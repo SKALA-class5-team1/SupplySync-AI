@@ -41,7 +41,10 @@ class RegisterResult(BaseModel):
     quote_id: Union[int, str]
     status: str = Field(examples=["REGISTERED"])
     rfq_status: Optional[str] = Field(default=None, examples=["QUOTED"])
-    registered_at: Optional[str] = None
+    outcome: Optional[Literal["CREATED", "ALREADY_PROCESSED"]] = Field(
+        default=None,
+        description="CREATED 새로 등록 / ALREADY_PROCESSED 이미 등록돼 있어 그대로 돌려줌 (중복 요청에도 안전)",
+    )
 
 
 class DocHit(BaseModel):
@@ -107,4 +110,5 @@ class SG4State(BaseModel):
     sg4_outcome: Optional[Sg4Outcome] = Field(default=None, description="SG4 결과. 상위 그래프의 분기 기준")
     registered_quote_id: Optional[Union[int, str]] = None
     registration_status: Optional[str] = None
+    registration_outcome: Optional[str] = Field(default=None, description="CREATED 또는 ALREADY_PROCESSED")
     error: Optional[str] = None

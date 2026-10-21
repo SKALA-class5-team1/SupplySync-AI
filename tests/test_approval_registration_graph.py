@@ -45,7 +45,7 @@ RAG_SAMPLE = [
      "content": "품질 보증 기간은 양산 시작일로부터 3년 또는 ...", "score": 0.82},
 ]
 REGISTER_SAMPLE = {"quote_id": "Q-2026-1019-001", "status": "REGISTERED",
-                   "rfq_status": "QUOTED", "registered_at": "2026-10-19T15:30:00"}
+                   "rfq_status": "QUOTED", "outcome": "CREATED"}
 
 
 def _resume(result, reason=None, changes=None, user_id=2):
@@ -193,6 +193,23 @@ def test_invalid_resume_is_not_treated_as_approval():
     asyncio.run(run())
 
 
+def test_already_processed_register_is_still_registered():
+    async def run():
+        app, cfg, _, fake = await _start(SUPPLY_SAMPLE)
+        orig = fake.__call__
+
+        async def dup(server, name, arguments):
+            if name == "register_quote":
+                fake.calls.append((server, name, arguments))
+                return {**REGISTER_SAMPLE, "outcome": "ALREADY_PROCESSED"}
+            return await orig(server, name, arguments)
+        tools._call_tool = dup
+        done = await app.ainvoke(Command(resume=approve()), cfg)
+        assert done["sg4_outcome"] == "REGISTERED", "이미 등록돼 있어도 정상 완료로 본다"
+        assert done["registration_outcome"] == "ALREADY_PROCESSED"
+    asyncio.run(run())
+
+
 def test_stale_approval_for_other_quote_is_not_accepted():
     async def run():
         app, cfg, _, fake = await _start(SUPPLY_SAMPLE)
@@ -239,6 +256,7 @@ if __name__ == "__main__":
     print("OK: 반려되면 사유를 남기고 재고 확인·등록 없이 끝남")
     test_invalid_resume_is_not_treated_as_approval()
     print("OK: 잘못된 승인 입력은 승인으로 보지 않고, 계속 틀리면 중단")
+    test_already_processed_register_is_still_registered()
     test_stale_approval_for_other_quote_is_not_accepted()
     test_invalid_then_valid_resume_continues()
     print("OK: 잘못된 입력 뒤 올바른 승인이 오면 이어서 진행")
