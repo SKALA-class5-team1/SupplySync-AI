@@ -6,7 +6,7 @@ approval_registration 도메인의 MCP 도구 호출 (business-mcp, rag-mcp).
 - 도구 이름은 서버가 정한 이름 그대로 부른다 (check_parts_supply 등). business_ 접두어는 Agent 쪽
   MCP 클라이언트가 붙이는 이름이라 여기서는 쓰지 않는다.
 - 중복 등록 방지(Idempotency-Key)는 business-mcp 서버가 백엔드로 보낼 때 붙인다. 이쪽은 보내지 않는다.
-- 서버 오류(429·503)는 2회까지 다시 시도하고, 입력 오류(도구가 isError 로 답함)는 바로 실패한다.
+- 서버 오류(429·503)와 시간 초과는 2회까지 다시 시도하고(전체 TASK_TIMEOUT_SEC 안에서), 입력 오류(도구가 isError 로 답함)는 바로 실패한다.
 """
 import asyncio
 import json
@@ -16,6 +16,7 @@ from typing import Any, Optional, Union
 
 from app.approval_registration.schemas import DocHit, RegisterResult, SupplyResult
 from app.core.config import settings
+from app.core.guardrails import mask_pii, truncate_any, truncate_text
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,9 @@ def _parse_result(result: Any) -> Any:
     """MCP 도구 응답에서 JSON 값을 꺼낸다."""
     if getattr(result, "isError", False):
         text = " ".join(getattr(c, "text", "") for c in result.content)
-        raise ToolError(text or "MCP 도구 호출 실패")
+        raise ToolError(
+            truncate_text(mask_pii(text), settings.MCP_RESULT_MAX_CHARS) or "MCP 도구 호출 실패"
+        )
     structured = getattr(result, "structuredContent", None)
     if structured is not None:
         # 목록 응답은 {"result": [...]} 로 감싸져 오는 경우가 있다
@@ -65,7 +68,9 @@ def _find_tool_error(exc: BaseException) -> Optional[ToolError]:
 
 
 def _is_retryable(exc: BaseException) -> bool:
-    """HTTP 429·503 이면 True. anyio 가 예외를 묶어 올리는 경우도 안쪽까지 본다."""
+    """HTTP 429·503 이거나 시간 초과면 True. anyio 가 예외를 묶어 올리는 경우도 안쪽까지 본다."""
+    if isinstance(exc, asyncio.TimeoutError):
+        return True
     status = getattr(getattr(exc, "response", None), "status_code", None)
     if status in _RETRY_STATUS:
         return True
@@ -103,9 +108,18 @@ async def _call_once(
 async def _call_tool(server: str, name: str, arguments: dict[str, Any]) -> Any:
     """MCP 도구를 호출하고 JSON 응답을 돌려준다. server 는 "business" 또는 "rag"."""
     headers = _build_headers()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + settings.TASK_TIMEOUT_SEC  # 재시도를 합쳐 이 시간을 넘기지 않는다
     for attempt in range(_MAX_RETRY + 1):
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise asyncio.TimeoutError(f"MCP {name} 작업 제한 시간 초과")
         try:
-            return await _call_once(server, name, arguments, headers)
+            # 호출 1회는 MCP_CALL_TIMEOUT_SEC, 전체는 남은 시간 안에 끊는다 (시간 초과도 재시도 대상)
+            return await asyncio.wait_for(
+                _call_once(server, name, arguments, headers),
+                min(settings.MCP_CALL_TIMEOUT_SEC, remaining),
+            )
         except Exception as exc:  # noqa: BLE001 - 재시도 대상인지 아래에서 가린다
             tool_error = _find_tool_error(exc)
             if tool_error is not None:
@@ -147,4 +161,7 @@ async def rag_search_docs(
     if doc_type:
         arguments["doc_type"] = doc_type
     raw = await _call_tool("rag", "search_docs", arguments)
-    return [DocHit.model_validate(item) for item in raw]
+    # 규정 본문이 길 수 있어 상태로 넘기기 전에 길이를 자른다
+    return [
+        DocHit.model_validate(truncate_any(item, settings.MCP_RESULT_MAX_CHARS)) for item in raw
+    ]
