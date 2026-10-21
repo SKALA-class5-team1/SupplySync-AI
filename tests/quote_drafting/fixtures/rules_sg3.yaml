@@ -1,0 +1,27 @@
+# dataset v2.2 04_rules/rules.yaml 중 SG3가 쓰는 부분만 옮긴 테스트용 복사본.
+# 실제 실행은 data/dataset_SG1/rules.yaml을 읽는다 (app/core/rules.py).
+
+# 5. 계약 한도 (근거 원문: sales_policy.md)
+policy_limits:
+  - { field: commercial.annual_cr_pct,  max: 3,      severity: MED, ref: "제11조" }
+  - { field: contract.warranty_years,   max: 3,      severity: MED, ref: "제12조" }
+  - { field: contract.warranty_km,      max: 100000, severity: MED, ref: "제12조" }
+  - { field: contract.penalty_cap_pct,  max: 10, null_is_violation: true, severity: MED, ref: "제13조" }
+  - { field: contract.eol_notice_months, max: 12,    severity: LOW, ref: "제14조" }
+  - { field: commercial.payment_days,   max: 90,     severity: MED, ref: "제15조" }
+
+# 5-1. 견적 검증 (SG3, validate_quote)
+price_by_year:           # 연도별 단가 (근거: RFQ §5, 제11조)
+  years: 6               # 공급 기간
+  formula: "round(unit_price * (1 - cr/100) ** (year - 1))"   # 1년차 = 기준가, 2년차부터 인하 → 6년차는 5회 적용
+  rounding: "원 단위 반올림"
+quote_margin:            # 근거 원문: sales_policy.md 제16조
+  basis: "부품 원가"     # 원가 = 옵션 반영 BOM 부품 단가 합계 (가공·물류비 미포함)
+  formula: "(unit_price - parts_cost) / unit_price"
+  min_pct: 30
+  check_years: [1, last] # 1년차와 연간 인하 적용 마지막 연도 모두 확인
+  ref: "제16조"
+quote_format:            # 근거 원문: sales_policy.md 제17조
+  required: [recipient, item, unit_price, quantity, due_date, incoterms, valid_until, conditions]
+  valid_days: 30
+  ref: "제17조"

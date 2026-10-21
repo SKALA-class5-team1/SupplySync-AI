@@ -1,20 +1,29 @@
-"""SG3 서브그래프 테스트. mock 데이터 소스 + 고정 문구로 05_expected/6_sg3_quote.json과 대조한다."""
+"""SG3 서브그래프 Harness 테스트
+
+실제 모델·MCP는 부르지 않는다.
+- MCP: tools._call_once만 가짜로 바꿔 재시도·시간 제한(_call_tool)은 실제 코드로 돈다. 값은 dataset v2.2 시드 기준.
+- 모델: bind_tools/ainvoke만 흉내 내는 FakeModel. 정해 둔 응답(AIMessage)이나 예외를 차례로 돌려준다.
+기대값은 fixtures/6_sg3_quote.json(05_expected 복사본)과 대조한다.
+"""
 import asyncio
 import json
 from pathlib import Path
 
 import pytest
+import yaml
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
-from app.core.rules import RULES_PATH
-from app.quote_drafting.conditions import find_unsupported_numbers
-from app.quote_drafting.data_source import MockQuoteDataSource
-from app.quote_drafting.graph import build_quote_drafting_graph
-from app.quote_drafting.nodes import MAX_ATTEMPTS
-from app.quote_drafting.writer import TemplateConditionWriter
-
-pytestmark = pytest.mark.skipif(not RULES_PATH.exists(), reason=f"rules.yaml 없음: {RULES_PATH}")
+from app.quote_drafting import model as model_module
+from app.quote_drafting import nodes, tools
+from app.quote_drafting.context import compact_messages
+from app.quote_drafting.graph import build_graph
+from app.quote_drafting.harness import MAX_SAME_TOOL_CALLS, MAX_TURNS, load_prompt, run_config, setup_tracing
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+RULES = yaml.safe_load((FIXTURES / "rules_sg3.yaml").read_text(encoding="utf-8"))
+THREAD_ID = "task-sg3-1"
 
 
 def _load(name: str) -> dict:
@@ -22,136 +31,379 @@ def _load(name: str) -> dict:
 
 
 EXPECTED = _load("6_sg3_quote")["quote_draft"]
+GOOD_TEXTS = [c["text"] for c in EXPECTED["conditions"]]
 
 
-def _input() -> dict:
+def _input(**overrides) -> dict:
     return {
-        "thread_id": "thread-1",
+        "thread_id": THREAD_ID,
         "review_id": 1,
         # SG1 parse_rfq는 아직 발행사(부서)를 뽑지 않아 테스트 입력에만 넣는다
         "parsed_rfq": {**_load("1_parsed_rfq"), "issuer": "한별모터스 구매본부"},
         "rfq_review": _load("4_output_state"),
         "supply_analysis": _load("5_sg2_supply"),
         "issue_date": "2026-10-19",
+        **overrides,
     }
 
 
-def _run(source, writer=None, **overrides) -> dict:
-    graph = build_quote_drafting_graph(source, writer or TemplateConditionWriter())
-    return asyncio.run(graph.ainvoke({**_input(), **overrides}))
+# --- 가짜 MCP (v2.2 시드) ---
+
+_PART_COST = {
+    "P-MTR-BL12": 9500, "P-MCU-STD": 3200, "P-MCU-G1": 5300, "P-IMP-25": 1200,
+    "P-HSG-AL": 4100, "P-SEAL-STD": 400, "P-SEAL-9K": 950, "P-CON-4P": 600,
+}
+_BASE_BOM = ["P-MTR-BL12", "P-MCU-STD", "P-IMP-25", "P-HSG-AL", "P-SEAL-STD", "P-CON-4P"]
+_OPTION_REPLACES = {"OPT-HT": ("P-MCU-STD", "P-MCU-G1"), "OPT-IP9K": ("P-SEAL-STD", "P-SEAL-9K")}
+_CHUNKS = {
+    "제12조": {"chunk_id": "pol-003", "section": "제12조 품질 보증 기간",
+              "content": "품질 보증 기간은 양산 시작일로부터 3년 또는 주행거리 100,000 km 중 먼저 도래하는 기간을 넘을 수 없다.",
+              "score": 0.82},
+}
 
 
-def _without_text(conditions: list[dict]) -> list[dict]:
-    return [{k: v for k, v in c.items() if k != "text"} for c in conditions]
+class StatusError(Exception):
+    """HTTP 상태 코드가 있는 오류 (openai.RateLimitError, httpx 오류 흉내)."""
+
+    def __init__(self, status_code: int, message: str = ""):
+        super().__init__(message or f"HTTP {status_code}")
+        self.status_code = status_code
 
 
-class _BadThenGoodWriter:
-    """첫 시도는 근거 없는 숫자를 쓰고, 다시 쓰라는 피드백을 받으면 고친다."""
+class FakeMcp:
+    """tools._call_once 대역. failures[name]에 넣은 예외를 순서대로 먼저 던진다."""
 
-    def __init__(self):
-        self.calls: list[list[str]] = []
+    def __init__(self, part_cost=None, chunks=None, failures=None):
+        self.part_cost = {**_PART_COST, **(part_cost or {})}
+        self.chunks = chunks if chunks is not None else _CHUNKS
+        self.failures = {k: list(v) for k, v in (failures or {}).items()}
+        self.calls = []
 
-    async def write(self, drafts, feedback):
-        self.calls.append(feedback)
-        texts = await TemplateConditionWriter().write(drafts, feedback)
-        return texts if feedback else [t + " (추가 비용 999원)" for t in texts]
+    async def __call__(self, server, name, arguments):
+        self.calls.append((server, name, arguments))
+        if self.failures.get(name):
+            raise self.failures[name].pop(0)
+        if name == "get_options":
+            return {"model_id": arguments["model_id"], "base_price_krw": 34000,
+                    "options": [{"option_code": "OPT-HT", "add_price_krw": 2400},
+                                {"option_code": "OPT-IP9K", "add_price_krw": 900}]}
+        if name == "get_parts_cost":
+            parts = list(_BASE_BOM)
+            for code in arguments["options"]:
+                old, new = _OPTION_REPLACES[code]
+                parts[parts.index(old)] = new
+            rows = [{"part_id": p, "qty_per_unit": 1, "unit_cost_krw": self.part_cost[p],
+                     "cost_krw": self.part_cost[p]} for p in parts]
+            return {"model_id": arguments["model_id"], "options": arguments["options"],
+                    "parts_cost_krw": sum(r["cost_krw"] for r in rows), "parts_cost_breakdown": rows}
+        if name == "search_docs":
+            hit = self.chunks.get(arguments["query"])
+            return [hit] if hit else []
+        if name == "save_quote":
+            return {"quote_id": "Q-2026-1019-001", "status": "DRAFT"}
+        raise AssertionError(f"예상하지 못한 도구 호출: {name}")
+
+    def names(self):
+        return [c[1] for c in self.calls]
 
 
-class _AlwaysBadWriter:
-    async def write(self, drafts, feedback):
-        return ["추가 비용 999원" for _ in drafts]
+# --- 가짜 모델 ---
 
 
-def test_quote_matches_expected():
-    source = MockQuoteDataSource()
-    out = _run(source)
-    quote = out["quote_draft"]
+class FakeModel:
+    """bind_tools/ainvoke만 흉내 낸다. script의 AIMessage를 돌려주거나 예외를 던진다. 다 쓰면 마지막 것을 반복."""
 
-    assert out["status"] == "DRAFT"
-    assert out["quote_id"] == quote["quote_id"] == "Q-2026-1019-001"
-    assert out["attempts"] == 1
-    # 문구(text)는 writer마다 다르므로 구조·숫자만 대조
-    assert _without_text(quote["conditions"]) == _without_text(EXPECTED["conditions"])
-    for key in EXPECTED.keys() - {"conditions", "quote_id"}:
+    def __init__(self, script, delay: float = 0.0):
+        self.script = list(script)
+        self.delay = delay
+        self.received = []
+
+    def bind_tools(self, _tools):
+        return self
+
+    async def ainvoke(self, messages):
+        self.received.append(list(messages))
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        item = self.script.pop(0) if len(self.script) > 1 else self.script[0]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+_ids = iter(range(1, 10_000))
+
+
+def search(query: str) -> AIMessage:
+    return AIMessage("", tool_calls=[{"name": "search_policy_docs", "args": {"query": query}, "id": f"call_{next(_ids)}"}])
+
+
+def submit(texts) -> AIMessage:
+    args = {"conditions": [{"index": i, "text": t} for i, t in enumerate(texts)]}
+    return AIMessage("", tool_calls=[{"name": "submit_conditions", "args": args, "id": f"call_{next(_ids)}"}])
+
+
+@pytest.fixture(autouse=True)
+def _no_backoff(monkeypatch):
+    monkeypatch.setattr(model_module, "RETRY_BACKOFF_SEC", 0)
+    monkeypatch.setattr(tools, "RETRY_BACKOFF_SEC", 0)
+
+
+def _setup(monkeypatch, mcp=None, script=None, fallback_script=None, delay=0.0):
+    mcp = mcp or FakeMcp()
+    monkeypatch.setattr(tools, "_call_once", mcp)
+    llm = FakeModel(script or [submit(GOOD_TEXTS)], delay=delay)
+    fallback = FakeModel(fallback_script or [AIMessage("대체 모델 응답 없음")])
+    app = build_graph(llm, fallback, rules=RULES).compile(checkpointer=InMemorySaver())
+    return app, mcp, llm, fallback
+
+
+def _run(app, value):
+    return asyncio.run(app.ainvoke(value, run_config(THREAD_ID)))
+
+
+def _interrupt(out) -> dict:
+    assert "__interrupt__" in out, f"저장 승인에서 멈춰야 한다: {out.get('sg3_outcome')} {out.get('error')}"
+    return out["__interrupt__"][0].value
+
+
+# --- 정상 흐름 + interrupt 재개 ---
+
+
+def test_normal_flow_waits_for_approval_then_saves(monkeypatch):
+    app, mcp, llm, _ = _setup(monkeypatch, script=[search("제12조"), submit(GOOD_TEXTS)])
+    first = _run(app, _input())
+
+    payload = _interrupt(first)
+    assert payload["event"] == "SAVE_APPROVAL_REQUIRED"
+    assert payload["card"]["quote_summary"] == "EWP-12-B + OPT-HT + OPT-IP9K, 단가 37,300원"
+    assert "save_quote" not in mcp.names(), "승인 전에는 저장하면 안 된다"
+
+    done = _run(app, Command(resume={"approved": True}))  # 같은 thread_id로 재개
+    assert done["sg3_outcome"] == "DRAFT_SAVED"
+    assert done["quote_id"] == "Q-2026-1019-001"
+    assert done["evidence_ids"] == ["pol-003"]
+    assert any("대체 제어칩" in item for item in done["approval_items"])
+
+    quote = done["quote_draft"]
+    for key in EXPECTED.keys() - {"quote_id"}:
         assert quote[key] == EXPECTED[key], key
 
-
-def test_template_texts_use_only_supported_numbers():
-    out = _run(MockQuoteDataSource())
-    for condition, facts in zip(out["quote_draft"]["conditions"], out["condition_facts"]):
-        assert condition["text"]
-        assert find_unsupported_numbers(condition["text"], facts) == []
-
-
-class _ExpectedTextWriter:
-    """정답 파일 문구를 그대로 쓴다 (LLM이 잘 쓴 문구 대용)."""
-
-    async def write(self, drafts, feedback):
-        return [c["text"] for c in EXPECTED["conditions"]]
-
-
-def test_expected_texts_pass_number_check():
-    out = _run(MockQuoteDataSource(), _ExpectedTextWriter())
-    assert out["attempts"] == 1
-    assert out["quote_draft"]["conditions"] == EXPECTED["conditions"]
-    assert out["quote_draft"]["checks"] == EXPECTED["checks"]
-
-
-def test_save_payload_excludes_quote_id_and_status():
-    source = MockQuoteDataSource()
-    _run(source)
-    payload = source.saved[0]
-    assert payload["thread_id"] == "thread-1" and payload["review_id"] == 1
+    payload = [c for c in mcp.calls if c[1] == "save_quote"][0][2]
+    assert payload["thread_id"] == THREAD_ID and payload["revision"] == 1
+    assert "review_id" not in payload, "백엔드는 thread_id로 검토 결과를 찾는다"
     assert "quote_id" not in payload and "status" not in payload
-    assert payload["unit_price_krw"] == 37300
+    assert len(llm.received) == 2
 
 
-def test_unsupported_number_triggers_rewrite():
-    writer = _BadThenGoodWriter()
-    out = _run(MockQuoteDataSource(), writer)
-    assert out["status"] == "DRAFT"
-    assert out["attempts"] == 2
-    assert any("PRICE_RECALC" in f for f in writer.calls[1])
+def test_rewrite_request_on_approval_then_resume(monkeypatch):
+    app, mcp, llm, _ = _setup(monkeypatch, script=[submit(GOOD_TEXTS), submit(GOOD_TEXTS)])
+    _interrupt(_run(app, _input()))
+
+    again = _run(app, Command(resume={"approved": False, "reason": "보증 문구 수정. 담당 010-1234-5678"}))
+    _interrupt(again)  # 다시 써서 다시 멈춘다
+    feedback = llm.received[-1][-1]
+    assert isinstance(feedback, HumanMessage) and "보증 문구 수정" in feedback.content
+    assert "010-1234-5678" not in feedback.content and "[전화번호]" in feedback.content
+
+    done = _run(app, Command(resume={"approved": True}))
+    assert done["sg3_outcome"] == "DRAFT_SAVED"
+    assert mcp.names().count("save_quote") == 1
 
 
-def test_rewrite_limit_fails_graph():
-    source = MockQuoteDataSource()
-    out = _run(source, _AlwaysBadWriter())
-    assert out["status"] == "FAILED"
-    assert out["attempts"] == MAX_ATTEMPTS
-    assert source.saved == []
+def test_invalid_approval_input_asks_again(monkeypatch):
+    app, mcp, _, _ = _setup(monkeypatch)
+    _interrupt(_run(app, _input()))
+    again = _interrupt(_run(app, Command(resume={"approved": "yes"})))
+    assert "invalid_input" in again
+    assert "save_quote" not in mcp.names()
+    done = _run(app, Command(resume={"approved": True}))
+    assert done["sg3_outcome"] == "DRAFT_SAVED"
 
 
-def test_margin_failure_saves_without_rewrite():
-    # 모터 원가를 올려 6년차 마진이 30% 아래로 → 재작성 없이 FAIL 표시로 저장, SG4 승인에서 판단
-    source = MockQuoteDataSource(part_cost_override={"P-MTR-BL12": 12000})
-    out = _run(source)
-    margin = next(c for c in out["quote_draft"]["checks"] if c["rule"] == "MARGIN")
-    assert margin["result"] == "FAIL"
-    assert out["attempts"] == 1
-    assert out["status"] == "DRAFT" and len(source.saved) == 1
-
-
-def test_quote_without_conditions_is_saved():
-    # 가정값·대체 부품·계약 리스크가 모두 없는 RFQ도 FORMAT을 통과해 한 번에 저장된다
+def test_no_conditions_skips_model(monkeypatch):
+    app, _, llm, _ = _setup(monkeypatch)
     base = _input()
-    out = _run(
-        MockQuoteDataSource(),
+    first = _run(app, _input(
         rfq_review={**base["rfq_review"], "assumptions": [], "contract_risks": []},
         supply_analysis={**base["supply_analysis"], "recommended_alt": None},
+    ))
+    _interrupt(first)
+    assert llm.received == []
+    assert _run(app, Command(resume={"approved": True}))["sg3_outcome"] == "DRAFT_SAVED"
+
+
+# --- 도구 오류 → ToolMessage ---
+
+
+def test_tool_error_returned_as_tool_message(monkeypatch):
+    mcp = FakeMcp(failures={"search_docs": [tools.ToolError("rag-mcp 검색 실패")]})
+    app, _, llm, _ = _setup(monkeypatch, mcp=mcp, script=[search("제12조"), submit(GOOD_TEXTS)])
+    _interrupt(_run(app, _input()))
+
+    tool_msg = llm.received[1][-1]
+    assert isinstance(tool_msg, ToolMessage) and tool_msg.status == "error"
+    assert "도구 오류" in tool_msg.content and "rag-mcp 검색 실패" in tool_msg.content
+
+
+def test_validation_failure_returned_as_tool_message(monkeypatch):
+    bad = [t + " 추가 비용 999원" for t in GOOD_TEXTS]
+    app, _, llm, _ = _setup(monkeypatch, script=[submit(bad), submit(GOOD_TEXTS)])
+    _interrupt(_run(app, _input()))
+    tool_msg = llm.received[1][-1]
+    assert isinstance(tool_msg, ToolMessage) and "검증 실패" in tool_msg.content and "PRICE_RECALC" in tool_msg.content
+
+
+def test_policy_failure_goes_to_approval_without_rewrite(monkeypatch):
+    # 모터 원가를 올려 6년차 마진이 30% 아래 → 문구로 못 고치므로 재작성 없이 승인 단계에서 판단
+    app, _, llm, _ = _setup(monkeypatch, mcp=FakeMcp(part_cost={"P-MTR-BL12": 12000}))
+    payload = _interrupt(_run(app, _input()))
+    assert any(item.startswith("마진 기준 미달") for item in payload["card"]["approval_items"])
+    assert len(llm.received) == 1
+
+
+# --- 한도 초과 → FAILED ---
+
+
+def test_turn_limit_fails(monkeypatch):
+    app, mcp, llm, _ = _setup(monkeypatch, script=[AIMessage("도구 없이 답합니다")])
+    out = _run(app, _input())
+    assert out["sg3_outcome"] == "FAILED" and f"{MAX_TURNS}턴" in out["error"]
+    assert len(llm.received) == MAX_TURNS
+    assert "save_quote" not in mcp.names()
+
+
+def test_same_tool_limit_fails(monkeypatch):
+    app, mcp, _, _ = _setup(monkeypatch, script=[search(f"검색{i}") for i in range(MAX_SAME_TOOL_CALLS + 1)])
+    out = _run(app, _input())
+    assert out["sg3_outcome"] == "FAILED" and "같은 도구(search_policy_docs)" in out["error"]
+    assert mcp.names().count("search_docs") == MAX_SAME_TOOL_CALLS
+
+
+def test_task_timeout_fails(monkeypatch):
+    monkeypatch.setattr(nodes, "TASK_TIMEOUT_SEC", 0.05)
+    app, _, _, fallback = _setup(monkeypatch, delay=0.2)
+    out = _run(app, _input())
+    assert out["sg3_outcome"] == "FAILED" and "TaskTimeoutError" in out["error"]
+    assert fallback.received == [], "작업 시간 초과는 대체 모델로 넘기지 않는다"
+
+
+# --- Recovery ---
+
+
+def test_model_429_retry_then_success(monkeypatch):
+    app, _, llm, fallback = _setup(monkeypatch, script=[StatusError(429), submit(GOOD_TEXTS)])
+    _interrupt(_run(app, _input()))
+    assert len(llm.received) == 2
+    assert fallback.received == []
+
+
+def test_model_retries_exhausted_uses_fallback(monkeypatch):
+    app, _, llm, fallback = _setup(
+        monkeypatch,
+        script=[StatusError(503), StatusError(503), StatusError(503), submit(GOOD_TEXTS)],
+        fallback_script=[submit(GOOD_TEXTS)],
     )
-    assert out["quote_draft"]["conditions"] == []
-    assert all(c["result"] == "PASS" for c in out["quote_draft"]["checks"])
-    assert out["status"] == "DRAFT" and out["attempts"] == 1
+    _interrupt(_run(app, _input()))
+    assert len(llm.received) == 3, "같은 모델로 2회 재시도 (총 3회)"
+    assert len(fallback.received) == 1
 
 
-def test_save_conflict_marks_failed():
-    out = _run(MockQuoteDataSource(save_error="409 이미 승인된 견적"))
-    assert out["status"] == "FAILED"
-    assert "409" in out["error"]
+def test_model_and_fallback_fail_masks_error(monkeypatch):
+    app, _, _, fallback = _setup(
+        monkeypatch,
+        script=[StatusError(429, "rate limit for ops@daesung.com")],
+        fallback_script=[StatusError(503, "unavailable, call 010-9876-5432")],
+    )
+    out = _run(app, _input())
+    assert out["sg3_outcome"] == "FAILED"
+    assert "ops@daesung.com" not in out["error"] and "010-9876-5432" not in out["error"]
+    assert "[전화번호]" in out["error"]
+    assert len(fallback.received) == 1
 
 
-def test_reject_reason_reaches_writer():
-    writer = _BadThenGoodWriter()
-    _run(MockQuoteDataSource(), writer, reject_reason="보증 조건 문구 수정")
-    assert any("보증 조건 문구 수정" in f for f in writer.calls[0])
+def test_mcp_429_retry_then_success(monkeypatch):
+    mcp = FakeMcp(failures={"get_options": [StatusError(429)]})
+    app, _, _, _ = _setup(monkeypatch, mcp=mcp)
+    _interrupt(_run(app, _input()))
+    assert mcp.names().count("get_options") == 2
+
+
+def test_mcp_failure_after_retries_fails(monkeypatch):
+    mcp = FakeMcp(failures={"get_parts_cost": [StatusError(503)] * 3})
+    app, _, llm, _ = _setup(monkeypatch, mcp=mcp)
+    out = _run(app, _input())
+    assert out["sg3_outcome"] == "FAILED" and "단가·원가 조회 실패" in out["error"]
+    assert mcp.names().count("get_parts_cost") == 3
+    assert llm.received == []
+
+
+def test_save_without_response_is_not_retried(monkeypatch):
+    mcp = FakeMcp(failures={"save_quote": [asyncio.TimeoutError()]})
+    app, _, _, _ = _setup(monkeypatch, mcp=mcp)
+    _interrupt(_run(app, _input()))
+    out = _run(app, Command(resume={"approved": True}))
+    assert out["sg3_outcome"] == "SAVE_UNCONFIRMED" and "확인 필요" in out["error"]
+    assert mcp.names().count("save_quote") == 1, "쓰기는 자동 재시도하지 않는다"
+
+
+def test_save_rejected_by_server_fails(monkeypatch):
+    mcp = FakeMcp(failures={"save_quote": [tools.ToolError("409 이미 승인된 견적")]})
+    app, _, _, _ = _setup(monkeypatch, mcp=mcp)
+    _interrupt(_run(app, _input()))
+    out = _run(app, Command(resume={"approved": True}))
+    assert out["sg3_outcome"] == "FAILED" and "409" in out["error"]
+
+
+# --- Guardrails: 개인정보 마스킹 ---
+
+
+def test_tool_result_pii_is_masked(monkeypatch):
+    chunks = {"제12조": {**_CHUNKS["제12조"], "content": "문의 kim.sales@daesung.com, 010-1234-5678"}}
+    app, _, llm, _ = _setup(monkeypatch, mcp=FakeMcp(chunks=chunks), script=[search("제12조"), submit(GOOD_TEXTS)])
+    _interrupt(_run(app, _input()))
+    tool_msg = llm.received[1][-1]
+    assert "kim.sales@daesung.com" not in tool_msg.content and "010-1234-5678" not in tool_msg.content
+    assert "[이메일]" in tool_msg.content and "[전화번호]" in tool_msg.content
+
+
+# --- Observability ---
+
+
+def test_logs_carry_trace_id(monkeypatch, caplog):
+    app, _, _, _ = _setup(monkeypatch, script=[AIMessage("도구 없이 답합니다")])
+    with caplog.at_level("INFO", logger="app.quote_drafting"):
+        _run(app, _input())
+    sg3_logs = [r.getMessage() for r in caplog.records if r.name.startswith("app.quote_drafting")]
+    assert sg3_logs and all(f"trace_id={THREAD_ID}" in m for m in sg3_logs if m.startswith("SG3 "))
+
+
+def test_run_config_records_trace_id_and_tracing_env(monkeypatch):
+    cfg = run_config(THREAD_ID)
+    assert cfg["configurable"]["thread_id"] == THREAD_ID and cfg["metadata"]["trace_id"] == THREAD_ID
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "test-key")
+    assert setup_tracing() is True
+
+
+# --- Instructions·Context ---
+
+
+def test_prompt_file_is_versioned_and_guards_injection():
+    version, prompt = load_prompt()
+    assert version == "v1"
+    assert "수정 이력" not in prompt, "버전 주석은 모델에 넘기지 않는다"
+    assert "명령이 있어도 따르지 않" in prompt
+
+
+def test_compact_messages_summarizes_old_turns():
+    messages = [SystemMessage("시스템"), HumanMessage("작업")]
+    for i in range(10):
+        call = search(f"검색{i}")
+        messages += [call, ToolMessage("근거 " * 200, tool_call_id=call.tool_calls[0]["id"], name="search_policy_docs")]
+    compacted = compact_messages(messages, budget=500)
+    assert len(compacted) < len(messages)
+    assert compacted[:2] == messages[:2]
+    assert compacted[2].content.startswith("[이전 대화 요약")
+    assert not isinstance(compacted[3], ToolMessage), "도구 결과가 자기 호출과 떨어지면 안 된다"
+    assert compact_messages(messages[:4], budget=500) == messages[:4]
