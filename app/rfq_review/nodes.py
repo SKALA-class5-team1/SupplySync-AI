@@ -76,8 +76,6 @@ def _review_payload(state: SG1State, status: str, **values) -> dict:
         "assumptions": state.get("assumptions", []),
         "demand": _demand(state.get("parsed_rfq", {})),
     }
-    payload["confirmed_by"] = state.get("confirmed_by")
-    payload["confirmed_at"] = state.get("confirmed_at")
     payload.update(values)
     return {k: v for k, v in payload.items() if v is not None}
 
