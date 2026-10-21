@@ -43,3 +43,23 @@ def test_event_failure_is_bounded(monkeypatch, status, attempts):
     with pytest.raises(events.EventDeliveryError, match=f"HTTP {status}"):
         asyncio.run(events.send_event("task", {"type": "STEP_START"}))
     assert len(calls) == attempts
+
+
+def test_tool_callbacks_emit_activity_without_tool_content(monkeypatch):
+    calls = []
+
+    async def capture(task_id, event):
+        calls.append(event)
+    monkeypatch.setattr(events, "post_once", capture)
+
+    async def run():
+        progress = events.ProgressEvents("task")
+        await progress.start("QUOTE")
+        await progress.on_tool_start({"name": "search_policy_docs"}, "private input", run_id="tool-1")
+        await progress.on_tool_end("private result", run_id="tool-1")
+        await progress.finish()
+    asyncio.run(run())
+    assert [e["type"] for e in calls] == ["STEP_START", "TOOL_START", "TOOL_END", "STEP_END"]
+    assert all(e["step"] == "QUOTE" for e in calls)
+    assert calls[1]["data"] == {"tool": "search_policy_docs", "tool_run_id": "tool-1"}
+    assert "private" not in json.dumps(calls)

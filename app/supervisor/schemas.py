@@ -69,6 +69,15 @@ class PendingInput(BaseModel):
     payload: dict[str, Any]
 
 
+class RunAcceptance(BaseModel):
+    """명령 접수 결과. 진행·완료 여부는 이벤트 또는 GET /runs/{thread_id}로 확인한다."""
+
+    task_id: str
+    request_id: str
+    thread_id: str
+    status: Literal["ACCEPTED"] = "ACCEPTED"
+
+
 class RunResult(BaseModel):
     task_id: str
     request_id: str

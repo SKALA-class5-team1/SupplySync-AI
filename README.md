@@ -71,7 +71,7 @@ SG3·SG4에서 원 BOM과 다시 합치지 않습니다. SG3의 `supply_analysis
 
 - SG1 HIGH 이슈: 체크포인트 저장 → `CLARIFICATION_REQUIRED` → 확인값과 `userId`를 반영해 재검토합니다.
 - SG1 모델 선정 불가, SG2 사용 가능한 공급 대안·검토 기준 없음: `RUN_ON_HOLD`. SG2는 먼저 검토 결과에 `final_plan={}`을 저장합니다.
-- 도구·모델·응답 검증·저장 실패: `RUN_FAILED`와 HTTP `502`. 다음 단계로 진행하지 않습니다.
+- 도구·모델·응답 검증·저장 실패: `RUN_FAILED` 이벤트로 원인을 전달하고 다음 단계로 진행하지 않습니다.
 - SG3는 처음 `revision=1`로 저장하고 SG4 승인 대기로 갑니다. 별도의 저장 승인 단계가 없습니다.
 - SG4 `APPROVED`: 전체 부품 재고 확인 → `POST /internal/quotes/{quote_id}/register` 성공 확인 → `RUN_END`의 `data.outcome=REGISTERED`.
 - SG4 `REJECTED`: `RUN_END`의 `data.outcome=REJECTED`. 추가 `DONE` 이벤트는 보내지 않습니다.
@@ -89,9 +89,9 @@ BE와 같은 호스트에서 실행할 때 **`AGENT_BASE_URL=http://127.0.0.1:80
 
 | 메서드·경로 | 동작 |
 | --- | --- |
-| `POST /runs` | 첫 담당자 입력 대기 또는 종료까지 실행 |
+| `POST /runs` | 즉시 `202`로 접수하고 백그라운드 실행 |
 | `GET /runs/{thread_id}` | 진행 상태, 공유 State, 현재 대기 요청 조회 |
-| `POST /runs/{thread_id}/resume` | BE 재개 본문을 내부 interrupt 응답으로 변환해 실행 |
+| `POST /runs/{thread_id}/resume` | 현재 대기 입력 검증 후 즉시 `202`로 접수하고 백그라운드 재개 |
 
 시작 본문:
 
@@ -108,18 +108,25 @@ BE와 같은 호스트에서 실행할 때 **`AGENT_BASE_URL=http://127.0.0.1:80
 `thread_id`는 BE가 준 값을 그대로 LangGraph에서 사용합니다. 재현 테스트에는 선택 필드 `base_date`,
 `issue_date`를 `YYYY-MM-DD`로 지정할 수 있습니다. `base_date` 생략 시 SG2와 SG4가 각각 조회 시점의 날짜를 사용합니다.
 
-현재 첫 요청은 동기 응답입니다. 입력 대기·종료·업무 보류에 도달하면 `200`을 반환합니다.
-`RUN_TIMEOUT_SEC=270` 이내로 실행을 제한하고 실패 이벤트 전송에 최대 약 10초를 남겨 BE의 300초 제한 안에 응답합니다.
-시간 초과는 `504`, 기술 실패는 `502`이며 오류 원인은 공통 응답의 `metadata.exception`에 담습니다.
-BE는 이 실패 응답을 재시도할 필요가 없습니다.
+시작과 재개는 그래프·외부 API 응답을 기다리지 않고 `202 Accepted`를 반환합니다.
+접수 응답은 명령을 받았다는 뜻이며 성공·완료를 의미하지 않습니다.
+백그라운드에서 입력 대기·업무 보류·완료·실패에 도달하면 BE callback으로 알립니다.
+기존 `RUN_TIMEOUT_SEC=270`은 HTTP 대기 시간과 별개인 백그라운드 명령 1건의 실행 한도입니다.
+초과 시 작업을 중단하고 `RUN_FAILED`에 실패 사유를 보냅니다. 현재 실행 한도는 BE의 30분 무이벤트 감시 한도보다 짧습니다.
 
 같은 `request_id`와 같은 본문의 재요청은 작업을 다시 시작하지 않습니다.
-원 요청이 실행 중이면 기존 접수 정보로 `202`, 처리가 끝났으면 저장한 접수 결과로 `200`을 반환합니다.
-이전 실행이 실패한 경우에도 같은 요청은 `200`과 `status=FAILED`를 반환합니다.
+실행 중·완료·실패 여부와 관계없이 최초와 동일한 접수 정보로 `202`를 반환합니다.
 동일 식별자에 다른 실행 본문을 쓰면 `409`입니다. 현재 상태는 `GET /runs/{thread_id}`에서 조회합니다.
 
-응답은 `BaseResponse` 형식이며 `result`에 `task_id`, `request_id`, `thread_id`, `status`,
-`current_stage`, `next_step`, `waiting_for`, `state`가 있습니다. 대기 시 `status=WAITING`이며
+접수 응답은 `BaseResponse` 형식이며 `result`에는 아래 값만 담습니다.
+
+```json
+{"task_id": "550e8400-e29b-41d4-a716-446655440000", "request_id": "be-request-001",
+ "thread_id": "task-550e8400-e29b-41d4-a716-446655440000", "status": "ACCEPTED"}
+```
+
+`GET /runs/{thread_id}`의 `result`에는 식별자와 현재 `status`, `current_stage`,
+`next_step`, `waiting_for`, `state`가 있습니다. 대기 시 `status=WAITING`이며
 `waiting_for={id, payload}`입니다. BE가 내부 `interrupt_id`를 재개 본문에 보낼 필요는 없습니다.
 
 요구 확인 재개:
@@ -146,9 +153,12 @@ SG4 승인·반려·수정 재개:
 
 `REJECTED`·`REVISE`에는 `reason`이 필요합니다. 선택 필드 `quoteId`를 보내면 현재 견적과 대조합니다.
 생략한 요청은 현재 대기 견적에 적용되므로 이전 차수의 지연 응답까지 식별하려면 BE가 `quoteId`를 함께 보내야 합니다.
-동시에 도착한 재개 요청은 내부 대기 ID와 잠금으로 한 번만 실행합니다.
+재개 접수 시 내부 대기 ID를 선점하여 동시에 도착한 같은 대기의 두 번째 요청은 `409`로 거절합니다.
+접수 처리는 그래프 실행 잠금을 기다리지 않습니다. 대기 이벤트 직후 들어온 재개도 먼저 접수한 뒤
+같은 thread의 이전 실행이 끝나면 이어서 실행합니다. 재개가 접수된 대기는 GET에서 다시 노출하지 않습니다.
 요청 형식 오류는 `400`, 승인 내용 오류는 `422`, 없는 실행은 `404`, 인증 실패는 `401`,
-단계·식별자 불일치 또는 종료 후 재개는 `409`입니다. 잘못된 입력은 체크포인트를 소비하지 않습니다.
+단계·식별자 불일치 또는 종료 후 재개는 `409`, 서버 종료 중 새 명령은 `503`입니다.
+잘못된 입력은 체크포인트를 소비하지 않습니다. 접수 이후 오류는 HTTP 대신 `RUN_FAILED` 이벤트로 전달합니다.
 
 ### 진행 이벤트와 시연 설정
 
@@ -159,16 +169,22 @@ SG4 승인·반려·수정 재개:
 ```
 
 `SUPPLY_CHECK`·`ALTERNATIVE_ANALYSIS`는 이벤트의 `step`입니다. 후자는 부족분이 있을 때만 발생합니다.
-첫 이벤트는 `STEP_START / RFQ_ANALYSIS`입니다. `CLARIFICATION_REQUIRED`·`APPROVAL_REQUIRED`는
+첫 이벤트는 접수 직후 `STEP_START / RFQ_ANALYSIS`이며, 단계가 바뀌거나 처리가 끝나면 `STEP_END`를 보냅니다.
+단계는 `RFQ_ANALYSIS`, `SPEC_MATCH`, `SUPPLY_CHECK`, `ALTERNATIVE_ANALYSIS`, `QUOTE`,
+`FINAL_REVIEW`, `APPROVAL`, `REVALIDATION`, `REGISTRATION`입니다.
+LangChain 도구 호출 callback에서는 `TOOL_START/TOOL_END`를 전송합니다. 도구 입력·결과 원문은 이벤트에 싣지 않습니다.
+`CLARIFICATION_REQUIRED`의 step은 `SPEC_MATCH`, `APPROVAL_REQUIRED`의 step은 `APPROVAL`입니다. 두 대기 이벤트는
 그래프 실행이 interrupt에서 반환되고 체크포인트를 읽은 뒤 전송합니다. 이벤트의 `data`에 확인 항목·승인 카드와 실행 ID를 포함합니다.
 
 전송은 1회 최대 3초, 일시 오류(연결 실패·시간 초과·408·429·5xx)에 최대 2회 재시도합니다.
 BE의 `409`는 이미 종료된 작업으로 보고 무시합니다. 다른 전송 실패는 실행 실패로 처리하며
-`RUN_FAILED` 전송까지 실패하더라도 HTTP 오류 본문에 원인을 반환합니다.
+`RUN_FAILED` 전송도 같은 규칙으로 재시도합니다. BE에 전혀 연결되지 않으면 전송 실패를 로그에 남기며
+`GET /runs/{thread_id}`의 `status=FAILED`, `state.error`에서 원인을 확인할 수 있습니다.
 견적 저장·등록 같은 업무 쓰기는 이 이벤트 재시도와 별개로 자동 재실행하지 않습니다.
 
 체크포인터·접수 기록·잠금은 **프로세스 메모리**에 있습니다. 시연은 단일 워커로 실행하고
 `RELOAD=false .venv/bin/python main.py`를 사용해 자동 재시작을 끕니다. 서버를 재시작하면 대기 상태와 중복 접수 기록이 사라집니다.
+서버는 백그라운드 Task 참조를 유지하고, 정상 종료 시 이미 접수한 실행과 이벤트 전송이 끝날 때까지 기다립니다.
 
 ### 연결 검증
 
@@ -179,6 +195,7 @@ DEBUG=false .venv/bin/python -m pytest -q
 `tests/workflow`는 MCP·LLM·BE HTTP 응답을 대체하고 실제 네 그래프와 체크포인터를 실행합니다.
 정상 등록, 확인자 기록, 전체 BOM 전달, 빈 계획 저장 후 업무 보류, 기술 오류, 수정 한도,
 재고 변경·새 revision, 즉시 재개, 중복 요청, 이벤트 재시도·409, 루트 API 인증을 검증합니다.
+외부 작업을 대기시켜도 시작·재개 API가 먼저 `202`를 반환하는지, 백그라운드 실패가 이벤트로 전달되는지도 검증합니다.
 실제 BE·Business MCP·RAG MCP·LLM을 함께 실행한 시연 검증은 별도입니다.
 
 ## Swagger 문서 작성 기준

@@ -44,19 +44,60 @@ class ProgressEvents(AsyncCallbackHandler):
     raise_error = True
 
     _steps = {
-        "match_spec": ("SPEC_MATCH", "요구 사양을 검토합니다"),
-        "get_parts": ("SUPPLY_CHECK", "부품 공급을 확인합니다"),
-        "build_alternatives": ("ALTERNATIVE_ANALYSIS", "부족 부품의 대안을 분석합니다"),
-        "prepare_quote": ("QUOTE", "견적을 작성합니다"),
-        "save_quote": ("FINAL_REVIEW", "견적을 저장합니다"),
-        "recheck_supply": ("REVALIDATION", "승인 후 재고를 다시 확인합니다"),
-        "register_quote": ("REGISTRATION", "견적을 등록합니다"),
+        "parse_rfq": "RFQ_ANALYSIS",
+        "validate_rules": "SPEC_MATCH",
+        "human_confirm": "SPEC_MATCH",
+        "match_spec": "SPEC_MATCH",
+        "get_parts": "SUPPLY_CHECK",
+        "build_alternatives": "ALTERNATIVE_ANALYSIS",
+        "prepare_quote": "QUOTE",
+        "save_quote": "FINAL_REVIEW",
+        "prepare_approval_card": "APPROVAL",
+        "request_approval": "APPROVAL",
+        "recheck_supply": "REVALIDATION",
+        "register_quote": "REGISTRATION",
+    }
+    _messages = {
+        "RFQ_ANALYSIS": "RFQ 분석을 시작합니다",
+        "SPEC_MATCH": "요구 사양을 검토합니다",
+        "SUPPLY_CHECK": "부품 공급을 확인합니다",
+        "ALTERNATIVE_ANALYSIS": "부족 부품의 대안을 분석합니다",
+        "QUOTE": "견적을 작성합니다",
+        "FINAL_REVIEW": "견적을 저장합니다",
+        "APPROVAL": "견적 승인을 확인합니다",
+        "REVALIDATION": "승인 후 재고를 다시 확인합니다",
+        "REGISTRATION": "견적을 등록합니다",
     }
 
     def __init__(self, task_id: str):
         self.task_id = task_id
+        self._active: str | None = None
+
+    async def start(self, step: str) -> None:
+        if self._active == step:
+            return
+        await self.finish()
+        await send_event(self.task_id, {"type": "STEP_START", "step": step, "message": self._messages[step]})
+        self._active = step
+
+    async def finish(self) -> None:
+        if self._active:
+            await send_event(self.task_id, {"type": "STEP_END", "step": self._active})
+            self._active = None
 
     async def on_chain_start(self, serialized, inputs, *, run_id, name=None, **kwargs):
         if name in self._steps:
-            step, message = self._steps[name]
-            await send_event(self.task_id, {"type": "STEP_START", "step": step, "message": message})
+            await self.start(self._steps[name])
+
+    async def on_tool_start(self, serialized, input_str, *, run_id, **kwargs):
+        if self._active:
+            await send_event(self.task_id, {
+                "type": "TOOL_START", "step": self._active,
+                "data": {"tool": (serialized or {}).get("name"), "tool_run_id": str(run_id)},
+            })
+
+    async def on_tool_end(self, output, *, run_id, **kwargs):
+        if self._active:
+            await send_event(self.task_id, {
+                "type": "TOOL_END", "step": self._active, "data": {"tool_run_id": str(run_id)},
+            })

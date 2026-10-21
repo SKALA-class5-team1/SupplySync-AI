@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     TASK_TIMEOUT_SEC: float = 120.0
     # 도구 결과를 그래프 상태로 넘길 때 문자열 하나의 최대 길이
     MCP_RESULT_MAX_CHARS: int = 2000
-    # BE 응답 제한 300초에서 실패 이벤트 전송 시간을 남긴다.
+    # 백그라운드 명령 1건의 실행 한도. 초과하면 RUN_FAILED 이벤트로 알린다.
     RUN_TIMEOUT_SEC: float = Field(default=270.0, gt=0, le=270)
 
     # MCP 서버 주소 (/mcp까지 포함). business-mcp 호출은 app/core/mcp_client.py, rag-mcp는 서버 준비 후 연결합니다.

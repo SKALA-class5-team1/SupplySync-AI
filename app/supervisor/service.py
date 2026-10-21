@@ -17,7 +17,7 @@ from app.supervisor.events import ProgressEvents, send_event
 from app.supervisor.graph import build_graph
 from app.supervisor.schemas import (
     ApprovalResume, ClarificationResume, PendingInput, ResumeRunRequest,
-    RunResult, StartRunRequest,
+    RunAcceptance, RunResult, StartRunRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -28,13 +28,10 @@ class AcceptedRun:
     request: StartRunRequest
     result: RunResult | None = None
 
-    def receipt(self) -> RunResult:
-        if self.result is not None:
-            return self.result.model_copy(deep=True)
-        return RunResult(
+    def receipt(self) -> RunAcceptance:
+        return RunAcceptance(
             task_id=self.request.task_id, request_id=self.request.request_id,
-            thread_id=self.request.thread_id, status="ACCEPTED", current_stage="SG1",
-            next_step="rfq_review", state=self.request.model_dump(mode="json", exclude_none=True),
+            thread_id=self.request.thread_id,
         )
 
 
@@ -45,9 +42,36 @@ class WorkflowService:
         self._requests: dict[str, AcceptedRun] = {}
         self._threads: dict[str, str] = {}
         self._tasks: dict[str, str] = {}
+        self._background: set[asyncio.Task] = set()
+        self._claimed_interrupts: set[tuple[str, str]] = set()
+        self._closing = False
 
     def _lock(self, thread_id: str) -> asyncio.Lock:
         return self._locks.setdefault(thread_id, asyncio.Lock())
+
+    def _schedule(self, thread_id: str, value, *, first: bool = False, interrupt_id: str | None = None) -> None:
+        task = asyncio.create_task(
+            self._execute(thread_id, value, first=first, interrupt_id=interrupt_id),
+            name=f"workflow:{thread_id}",
+        )
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    async def _execute(self, thread_id: str, value, *, first: bool, interrupt_id: str | None) -> None:
+        # HTTP 접수는 이 잠금을 기다리지 않는다. 같은 thread의 그래프 실행만 직렬화한다.
+        async with self._lock(thread_id):
+            accepted = self._requests[self._threads[thread_id]]
+            accepted.result = await self._run(thread_id, value, first=first, interrupt_id=interrupt_id)
+
+    async def shutdown(self) -> None:
+        """새 명령을 막고 이미 접수한 작업의 이벤트 전송까지 마친다."""
+        self._closing = True
+        if self._background:
+            await asyncio.gather(*tuple(self._background))
+
+    def _check_accepting(self) -> None:
+        if self._closing:
+            raise HTTPException(503, "서버 종료 중이어서 새 실행을 접수할 수 없습니다")
 
     @staticmethod
     def _config(thread_id: str) -> dict:
@@ -69,12 +93,21 @@ class WorkflowService:
         if not snapshot.values:
             request_id = self._threads.get(thread_id)
             if request_id:
-                return self._requests[request_id].receipt()
+                accepted = self._requests[request_id]
+                if accepted.result is not None:
+                    return accepted.result.model_copy(deep=True)
+                return RunResult(
+                    **accepted.receipt().model_dump(), current_stage="SG1", next_step="rfq_review",
+                    state=accepted.request.model_dump(mode="json", exclude_none=True),
+                )
             raise HTTPException(404, "존재하지 않는 실행 ID입니다")
         state = jsonable_encoder(snapshot.values)
         pending = None if state.get("status") == "FAILED" else self._pending(snapshot)
+        claimed = pending and (thread_id, pending.id) in self._claimed_interrupts
         status = "WAITING" if pending else state.get("status", "ANALYZING")
         stage = pending.payload["step"].split(".")[0] if pending else state.get("current_stage", "SG1")
+        if claimed:
+            pending, status = None, "RUNNING"
         return RunResult(
             task_id=state["task_id"], request_id=state["request_id"],
             thread_id=thread_id, status=status, current_stage=stage,
@@ -89,7 +122,7 @@ class WorkflowService:
             clarification = payload["step"] == "SG1.human_confirm"
             await send_event(job.task_id, {
                 "type": "CLARIFICATION_REQUIRED" if clarification else "APPROVAL_REQUIRED",
-                "step": "RFQ_ANALYSIS" if clarification else "APPROVAL",
+                "step": "SPEC_MATCH" if clarification else "APPROVAL",
                 "message": "RFQ 요구 확인이 필요합니다" if clarification else "견적 승인이 필요합니다",
                 "data": {
                     **{key: value for key, value in payload.items() if key != "event"},
@@ -110,20 +143,34 @@ class WorkflowService:
         else:
             raise RuntimeError(job.state.get("error") or f"예상하지 못한 실행 상태: {job.status}")
 
-    async def _run(self, thread_id: str, value, *, first: bool = False) -> RunResult:
+    async def _run(
+        self, thread_id: str, value, *, first: bool = False, interrupt_id: str | None = None,
+    ) -> RunResult:
         accepted = self._requests[self._threads[thread_id]]
         request = accepted.request
-        config = {**self._config(thread_id), "callbacks": [ProgressEvents(request.task_id)]}
+        progress = ProgressEvents(request.task_id)
+        config = {**self._config(thread_id), "callbacks": [progress]}
         try:
             async with asyncio.timeout(settings.RUN_TIMEOUT_SEC):
+                if interrupt_id:
+                    snapshot = await self._snapshot(thread_id)
+                    if snapshot.values.get("status") == "FAILED":
+                        # 이전 실행의 대기 이벤트 전송이 실패했다면 이미 RUN_FAILED로 종료됐다.
+                        return await self.get(thread_id)
+                    pending = self._pending(snapshot)
+                    if not pending or pending.id != interrupt_id:
+                        raise RuntimeError("접수한 재개 요청의 체크포인트가 변경되었습니다")
                 if first:
-                    await send_event(request.task_id, {
-                        "type": "STEP_START", "step": "RFQ_ANALYSIS", "message": "RFQ 분석을 시작합니다",
-                    })
+                    await progress.start("RFQ_ANALYSIS")
                 await self.graph.ainvoke(value, config)
                 job = await self.get(thread_id)
+                if job.status == "FAILED":
+                    raise RuntimeError(job.state.get("error") or "그래프 실행 실패")
+                await progress.finish()
                 await self._notify_result(job)
                 return job
+        except asyncio.CancelledError:
+            return await self._fail(thread_id, "백그라운드 실행이 취소되었습니다")
         except Exception as exc:
             # 쓰기의 응답이 불명확해도 그래프를 자동 재실행하지 않는다.
             timeout = isinstance(exc, TimeoutError)
@@ -131,32 +178,38 @@ class WorkflowService:
                 f"실행 제한 시간({settings.RUN_TIMEOUT_SEC:g}초)을 초과했습니다"
                 if timeout else describe_error(exc)
             )
-            logger.error("워크플로 실패 thread_id=%s %s", thread_id, error)
-            failed = {
-                **request.model_dump(mode="json", exclude_none=True),
-                "status": "FAILED", "next_step": "hold", "error": error,
-            }
-            accepted.result = RunResult(
-                task_id=request.task_id, request_id=request.request_id, thread_id=thread_id,
-                status="FAILED", current_stage="SG1", next_step="hold", state=failed,
-            )
-            try:
-                await self.graph.aupdate_state(self._config(thread_id), failed)
-                accepted.result = await self.get(thread_id)
-            except Exception:
-                logger.exception("실패 체크포인트 기록 오류 thread_id=%s", thread_id)
-            try:
-                await send_event(request.task_id, {"type": "RUN_FAILED", "message": error, "data": {"error": error}})
-            except Exception:
-                logger.exception("RUN_FAILED 전송 실패 thread_id=%s", thread_id)
-            raise HTTPException(504 if timeout else 502, error) from exc
+            return await self._fail(thread_id, error)
 
-    async def start(self, request: StartRunRequest) -> RunResult:
+    async def _fail(self, thread_id: str, error: str) -> RunResult:
+        accepted = self._requests[self._threads[thread_id]]
+        request = accepted.request
+        logger.error("워크플로 실패 thread_id=%s %s", thread_id, error)
+        failed = {
+            **request.model_dump(mode="json", exclude_none=True),
+            "status": "FAILED", "next_step": "hold", "error": error,
+        }
+        accepted.result = RunResult(
+            task_id=request.task_id, request_id=request.request_id, thread_id=thread_id,
+            status="FAILED", current_stage="SG1", next_step="hold", state=failed,
+        )
+        try:
+            await self.graph.aupdate_state(self._config(thread_id), failed)
+            accepted.result = await self.get(thread_id)
+        except Exception:
+            logger.exception("실패 체크포인트 기록 오류 thread_id=%s", thread_id)
+        try:
+            await send_event(request.task_id, {"type": "RUN_FAILED", "message": error, "data": {"error": error}})
+        except Exception:
+            logger.exception("RUN_FAILED 전송 실패 thread_id=%s", thread_id)
+        return accepted.result
+
+    async def start(self, request: StartRunRequest) -> RunAcceptance:
         existing = self._requests.get(request.request_id)
         if existing:
             if existing.request != request:
                 raise HTTPException(409, "같은 request_id에 다른 실행 본문을 사용할 수 없습니다")
             return existing.receipt()
+        self._check_accepting()
         if request.thread_id in self._threads or request.task_id in self._tasks:
             raise HTTPException(409, "이미 접수한 task_id 또는 thread_id입니다. 기존 request_id를 사용하세요")
         # 첫 await 전에 접수하므로 동시에 도착한 동일 요청도 한 번만 시작된다.
@@ -164,12 +217,8 @@ class WorkflowService:
         self._requests[request.request_id] = accepted
         self._threads[request.thread_id] = request.request_id
         self._tasks[request.task_id] = request.thread_id
-        async with self._lock(request.thread_id):
-            result = await self._run(
-                request.thread_id, request.model_dump(mode="json", exclude_none=True), first=True,
-            )
-            accepted.result = result.model_copy(deep=True)
-            return result
+        self._schedule(request.thread_id, request.model_dump(mode="json", exclude_none=True), first=True)
+        return accepted.receipt()
 
     @staticmethod
     def _resume_value(job: RunResult, request: ResumeRunRequest) -> dict:
@@ -200,17 +249,26 @@ class WorkflowService:
             return value
         raise HTTPException(422, "지원하지 않는 재개 본문입니다")
 
-    async def resume(self, thread_id: str, request: ResumeRunRequest) -> RunResult:
+    async def resume(self, thread_id: str, request: ResumeRunRequest) -> RunAcceptance:
+        self._check_accepting()
         # 동시에 온 두 승인이 다음 revision의 interrupt까지 소비하지 않도록 대기 ID를 먼저 고정한다.
         initial = await self.get(thread_id)
         value = self._resume_value(initial, request)
-        async with self._lock(thread_id):
-            current = await self.get(thread_id)
-            if not current.waiting_for or current.waiting_for.id != initial.waiting_for.id:
-                raise HTTPException(409, "이미 처리된 대기 요청입니다")
-            return await self._run(thread_id, Command(resume={current.waiting_for.id: value}))
+        key = (thread_id, initial.waiting_for.id)
+        # snapshot 조회 이후 claim과 예약 사이에는 await가 없다.
+        if key in self._claimed_interrupts:
+            raise HTTPException(409, "이미 접수한 대기 요청입니다")
+        self._claimed_interrupts.add(key)
+        self._schedule(thread_id, Command(resume={key[1]: value}), interrupt_id=key[1])
+        return self._requests[self._threads[thread_id]].receipt()
 
 
 @lru_cache(maxsize=1)
 def get_service() -> WorkflowService:
     return WorkflowService()
+
+
+async def shutdown_service() -> None:
+    if get_service.cache_info().currsize:
+        await get_service().shutdown()
+        get_service.cache_clear()

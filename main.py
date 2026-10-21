@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 import uvicorn
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError, HTTPException
@@ -27,15 +29,25 @@ from app.quote_drafting.router import router as quote_drafting_router
 from app.rfq_review.router import router as rfq_review_router
 from app.supply_analysis.router import router as supply_analysis_router
 from app.supervisor.router import router as supervisor_router
+from app.supervisor.service import shutdown_service
 
 setup_logging()
 setup_tracing()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        yield
+    finally:
+        await shutdown_service()
+
 
 app = FastAPI(
     title=settings.APP_NAME,
     description="SupplySync AI의 RFQ 검토, 공급 분석, 견적 작성 및 승인 등록 API입니다.",
     version=settings.APP_VERSION,
     debug=settings.DEBUG,
+    lifespan=lifespan,
     docs_url="/docs",
     redoc_url=f"{settings.API_V1_PREFIX}/redoc",
     openapi_url=f"{settings.API_V1_PREFIX}/openapi.json",
