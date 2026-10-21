@@ -9,7 +9,7 @@
 - LLM 이 고르는 Supervisor 가 아니라, 정해진 순서와 조건(반려·재고 변동)만 다루는 단순한 흐름이다.
 """
 import logging
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, Literal
 
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
@@ -30,6 +30,14 @@ class SupervisorState(BaseModel):
     rfq_id: Union[int, str]
     rfq_number: str = Field(default="", examples=["HB-EV7-EWP-001"])
 
+    # --- SG1 이 채우는 값 (SG3 입력). 이름·타입은 SG1State(app/rfq_review/state.py)와 같다 ---
+    parsed_rfq: dict[str, Any] = Field(default_factory=dict)
+    selected_model: Optional[str] = None
+    options: list[str] = Field(default_factory=list)
+    assumptions: list[dict[str, Any]] = Field(default_factory=list)
+    contract_risks: list[dict[str, Any]] = Field(default_factory=list)
+    demand: dict[str, Any] = Field(default_factory=dict)
+
     # --- SG2 가 채우는 값 ---
     final_plan: dict[str, int] = Field(default_factory=dict)
     due_date: Optional[str] = None
@@ -40,6 +48,9 @@ class SupervisorState(BaseModel):
     quote_summary: str = ""
     approval_items: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
+    sg3_outcome: Optional[Literal["DRAFT_SAVED", "FAILED", "SAVE_UNCONFIRMED"]] = Field(
+        default=None, description="SG3 결과. DRAFT_SAVED 일 때만 SG4 로 간다"
+    )
     draft_revision: int = 1  # SG3 가 이번에 저장할 견적 revision. 수정 요청 때 prepare_rewrite 가 +1 한다
 
     # --- SG4 가 채우는 값 ---
@@ -64,7 +75,12 @@ class SupervisorState(BaseModel):
 # ----------------------------------------------------------------------
 async def sg1_rfq_review(state: SupervisorState) -> dict[str, Any]:
     """TODO: 실제 SG1(rfq_review) 서브그래프로 교체."""
-    return {"rfq_number": state.rfq_number or "HB-EV7-EWP-001"}
+    return {
+        "rfq_number": state.rfq_number or "HB-EV7-EWP-001",
+        # SG3 입력용 값 (임시. 실제 SG1 출력으로 교체)
+        "selected_model": "EWP-12-B",
+        "options": ["OPT-HT", "OPT-IP9K"],
+    }
 
 
 async def sg2_supply_analysis(state: SupervisorState) -> dict[str, Any]:
@@ -91,6 +107,7 @@ async def sg3_quote_drafting(state: SupervisorState) -> dict[str, Any]:
         "quote_summary": summary,
         "approval_items": ["보증 5년 수용 시 품질본부장 승인 필요", "시작품 500개 대체 칩 적용"],
         "draft_revision": revision,
+        "sg3_outcome": "DRAFT_SAVED",
     }
 
 
@@ -106,6 +123,14 @@ async def prepare_rewrite(state: SupervisorState) -> dict[str, Any]:
 # ----------------------------------------------------------------------
 # 분기
 # ----------------------------------------------------------------------
+def _after_sg3(state: SupervisorState) -> str:
+    """SG3 결과가 DRAFT_SAVED 일 때만 SG4 로 간다. 실패·저장 미확인이면 승인을 요청하지 않고 멈춘다."""
+    if state.sg3_outcome == "DRAFT_SAVED":
+        return "sg4_approval_registration"
+    logger.warning("SG3 결과 %s 라서 SG4 로 가지 않고 종료 thread_id=%s", state.sg3_outcome, state.thread_id)
+    return END
+
+
 def _after_sg4(state: SupervisorState) -> str:
     """SG4 결과에 따라 갈 곳을 정한다. 이동은 규칙으로만 정하고 LLM 판단은 쓰지 않는다."""
     if state.sg4_outcome == "REWRITE_REQUIRED":
@@ -132,7 +157,9 @@ def build_supervisor_graph() -> StateGraph:
     graph.add_edge(START, "sg1_rfq_review")
     graph.add_edge("sg1_rfq_review", "sg2_supply_analysis")
     graph.add_edge("sg2_supply_analysis", "sg3_quote_drafting")
-    graph.add_edge("sg3_quote_drafting", "sg4_approval_registration")
+    graph.add_conditional_edges(
+        "sg3_quote_drafting", _after_sg3, ["sg4_approval_registration", END]
+    )
     graph.add_conditional_edges(
         "sg4_approval_registration", _after_sg4, ["prepare_rewrite", END]
     )

@@ -13,6 +13,7 @@ from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
 from langgraph.types import Command  # noqa: E402
 
 from app.approval_registration import tools  # noqa: E402
+from app.supervisor import graph as sup  # noqa: E402
 from app.supervisor.graph import MAX_REVISIONS, build_supervisor_graph  # noqa: E402
 from tests.test_approval_registration_graph import FakeMcp, SUPPLY_SAMPLE, approve, reject, revise  # noqa: E402
 
@@ -71,6 +72,33 @@ def test_final_reject_ends_without_sg3():
     asyncio.run(run())
 
 
+def test_sg3_not_saved_does_not_go_to_sg4():
+    async def run():
+        orig = sup.sg3_quote_drafting
+        for bad in ("FAILED", "SAVE_UNCONFIRMED"):
+            async def fake_sg3(state, _bad=bad):
+                return {"sg3_outcome": _bad, "draft_revision": state.draft_revision}
+            sup.sg3_quote_drafting = fake_sg3
+            try:
+                app, fake = _app()
+                out = await app.ainvoke(INPUT, {"configurable": {"thread_id": f"t-{bad}"}})
+            finally:
+                sup.sg3_quote_drafting = orig
+            assert "__interrupt__" not in out, "저장이 확인되지 않으면 승인을 요청하면 안 된다"
+            assert out["sg3_outcome"] == bad
+            assert "register_quote" not in fake.names()
+    asyncio.run(run())
+
+
+def test_sg1_keys_are_kept_for_sg3():
+    async def run():
+        app, _ = _app()
+        out = await app.ainvoke(INPUT, CFG)
+        assert out["selected_model"] == "EWP-12-B" and out["options"]
+        assert out["sg3_outcome"] == "DRAFT_SAVED"
+    asyncio.run(run())
+
+
 def test_reject_limit():
     async def run():
         app, fake = _app()
@@ -118,6 +146,10 @@ if __name__ == "__main__":
     print("OK: 반려 -> SG3 재작성 -> 다시 승인 -> 등록")
     test_final_reject_ends_without_sg3()
     print("OK: 최종 반려(REJECTED)는 SG3 로 돌아가지 않고 종료")
+    test_sg3_not_saved_does_not_go_to_sg4()
+    print("OK: SG3 저장 실패·미확인이면 SG4 로 가지 않음")
+    test_sg1_keys_are_kept_for_sg3()
+    print("OK: SG1 키가 상위 상태에 남아 SG3 입력으로 쓰임")
     test_reject_limit()
     print(f"OK: 수정 요청이 쌓여 revision {MAX_REVISIONS} 에 도달하면 종료")
     test_stock_shortage_does_not_loop_to_sg3()
