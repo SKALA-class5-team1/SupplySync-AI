@@ -23,7 +23,7 @@ def test_lists_business_tools_with_prefix():
         "business_get_models", "business_get_options", "business_get_bom",
         "business_check_parts_supply", "business_get_parts_cost",
         "business_save_review", "business_save_quote", "business_register_quote",
-        "business_get_rfq_content",
+        "business_get_rfq_content", "business_get_substitutes",
     }
 
 
