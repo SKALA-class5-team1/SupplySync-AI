@@ -46,6 +46,9 @@ class SupervisorState(BaseModel):
     approval_card: Optional[ApprovalCard] = None
     approved: bool = False
     rejected: bool = False
+    decision_result: Optional[str] = None
+    approver_id: Optional[Union[int, str]] = None
+    changes: dict[str, Any] = Field(default_factory=dict)
     reject_reason: Optional[str] = None
     supply: Optional[SupplyResult] = None
     recheck_ok: Optional[bool] = None
@@ -81,7 +84,7 @@ async def sg3_quote_drafting(state: SupervisorState) -> dict[str, Any]:
     revision = state.draft_revision + 1
     summary = "EWP-12-B + OPT-HT + OPT-IP9K, 단가 37,300원"
     if state.reject_reason:
-        summary += f" (반려 반영: {state.reject_reason})"
+        summary += f" (수정 요청 반영: {state.reject_reason})"
     return {
         "quote_id": "Q-2026-1019-001",
         "quote_summary": summary,
@@ -99,9 +102,11 @@ def _after_sg4(state: SupervisorState) -> str:
         if state.draft_revision < MAX_REVISIONS:
             return "sg3_quote_drafting"
         logger.warning("반려가 %d회를 넘어 종료 thread_id=%s", MAX_REVISIONS, state.thread_id)
+    # REJECTED: 최종 반려. SG3 로 돌리지 않고 종료한다 (결과값 REJECTED 를 종료 이벤트에 담는다).
     # REGISTERED: 전체 완료(DONE).
     # STOCK_REVIEW_REQUIRED: DONE 이 아니다. 후속 정책(SG2 복귀 등)은 팀 합의 전이라 여기서 멈춘다.
     # INVALID_APPROVAL: 승인 입력 오류로 중단.
+    # FAILED: MCP 호출이 재시도 후에도 실패. DONE 이 아니다. 실행 상태 FAILED 처리는 서버(실행 서비스)에서 한다.
     return END
 
 
