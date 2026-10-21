@@ -39,6 +39,18 @@ class Settings(BaseSettings):
     ]
     OPENAI_API_KEY: str = Field(default="", repr=False)
 
+    # LangSmith 추적 (선택). 켜면 trace_id(=thread_id)로 Node·도구·Token·지연을 본다.
+    LANGSMITH_TRACING: bool = False
+    LANGSMITH_API_KEY: str = Field(default="", repr=False)
+    LANGSMITH_PROJECT: str = "supplysync"
+
+    # MCP 도구 한 번 호출에 허용하는 최대 시간(초) - 재시도 포함 전체가 아니라 호출 1회 기준
+    MCP_CALL_TIMEOUT_SEC: float = 120.0
+    # 도구 하나를 부르는 일 전체(재시도 포함)에 허용하는 시간(초)
+    TASK_TIMEOUT_SEC: float = 120.0
+    # 도구 결과를 그래프 상태로 넘길 때 문자열 하나의 최대 길이
+    MCP_RESULT_MAX_CHARS: int = 2000
+
     # MCP 접속 주소만 설정합니다. 실제 도구 호출은 추후 구현합니다.
     BUSINESS_MCP_URL: str = "http://127.0.0.1:8101/mcp"
     RAG_MCP_URL: str = "http://127.0.0.1:8102/mcp"

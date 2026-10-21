@@ -17,6 +17,7 @@ from langgraph.types import interrupt
 
 from app.approval_registration import tools
 from app.approval_registration.schemas import ApprovalCard, SG4State
+from app.core.guardrails import mask_any, mask_pii
 
 logger = logging.getLogger(__name__)
 
@@ -24,25 +25,45 @@ logger = logging.getLogger(__name__)
 MAX_INPUT_ATTEMPTS = 3  # 잘못된 승인 입력을 다시 받아 주는 횟수
 
 
-def _parse_resume(resume_value: Any) -> tuple[bool, Optional[str]]:
-    """resume 본문에서 (승인 여부, 반려 사유)를 읽는다. 잘못된 입력은 ValueError.
+APPROVAL_STEP = "SG4.request_approval"  # resume 요청의 step 값 (승인 흐름 문서 3절)
+_RESULTS = {"APPROVED", "REJECTED", "REVISE"}
 
-    승인으로 짐작하지 않는다: approved 가 정확히 true/false 일 때만 받고,
-    반려에는 사유가 있어야 한다 (SG3 가 재작성에 쓴다). 승인자는 백엔드가 이미 기록했다.
-    TODO: resume 요청 본문 형식 확정. 지금은 {"approved": true} 또는
-    {"approved": false, "reject_reason": "..."} 로 가정한다.
+
+def _parse_resume(resume_value: Any) -> dict[str, Any]:
+    """resume 본문을 읽는다. 잘못된 입력은 ValueError. 승인으로 짐작하지 않는다.
+
+    합의 형식 (승인 흐름 문서 3절):
+      {"step": "SG4.request_approval", "userId": 2,
+       "decision": {"result": "APPROVED" | "REJECTED" | "REVISE", "reason": "...", "changes": {}}}
+    - step 이 지금 대기 중인 단계와 달라도 받지 않는다 (엉뚱한 단계의 응답 방지).
+    - REJECTED(최종 반려)·REVISE(수정 요청)에는 reason 이 있어야 한다.
+    - 승인자 권한 검사와 기록은 백엔드가 이미 했다. 여기서는 userId 를 남기기만 한다.
     """
     if not isinstance(resume_value, dict):
         raise ValueError("승인 결과는 객체여야 합니다")
-    approved = resume_value.get("approved")
-    if not isinstance(approved, bool):
-        raise ValueError("approved 는 true 또는 false 여야 합니다")
-    if approved:
-        return True, None
-    reason = resume_value.get("reject_reason")
-    if not isinstance(reason, str) or not reason.strip():
-        raise ValueError("반려에는 reject_reason(반려 사유)이 필요합니다")
-    return False, reason.strip()
+    if resume_value.get("step") != APPROVAL_STEP:
+        raise ValueError(f"step 은 {APPROVAL_STEP} 여야 합니다")
+    user_id = resume_value.get("userId")
+    if isinstance(user_id, bool) or not isinstance(user_id, (int, str)) or user_id == "":
+        raise ValueError("userId 가 필요합니다")
+    decision = resume_value.get("decision")
+    if not isinstance(decision, dict):
+        raise ValueError("decision 은 객체여야 합니다")
+    result = decision.get("result")
+    if result not in _RESULTS:
+        raise ValueError("decision.result 는 APPROVED, REJECTED, REVISE 중 하나여야 합니다")
+    reason = decision.get("reason")
+    if reason is not None and not isinstance(reason, str):
+        raise ValueError("decision.reason 은 문자열이어야 합니다")
+    reason = reason.strip() if reason else None
+    if result != "APPROVED" and not reason:
+        raise ValueError("반려·수정 요청에는 decision.reason(사유)이 필요합니다")
+    changes = decision.get("changes", {})
+    if changes is None:
+        changes = {}
+    if not isinstance(changes, dict):
+        raise ValueError("decision.changes 는 객체여야 합니다")
+    return {"result": result, "reason": reason, "changes": changes, "user_id": user_id}
 
 
 async def prepare_approval_card(state: SG4State) -> dict[str, Any]:
@@ -60,8 +81,8 @@ async def prepare_approval_card(state: SG4State) -> dict[str, Any]:
             logger.warning("SG4 근거 검색 실패 thread_id=%s", state.thread_id, exc_info=True)
     card = ApprovalCard(
         quote_id=state.quote_id,
-        summary=state.quote_summary,
-        approval_items=state.approval_items,
+        summary=mask_pii(state.quote_summary),
+        approval_items=mask_any(state.approval_items),
         evidence=evidence,
     )
     # 반려 후 SG3 가 다시 작성해 들어오는 경우를 위해 이전 판정 결과를 비운다
@@ -71,6 +92,9 @@ async def prepare_approval_card(state: SG4State) -> dict[str, Any]:
         "rejected": False,
         "reject_reason": None,
         "recheck_ok": None,
+        "decision_result": None,
+        "approver_id": None,
+        "changes": {},
         "sg4_outcome": None,
         "error": None,
     }
@@ -90,24 +114,38 @@ async def request_approval(state: SG4State) -> dict[str, Any]:
     for _ in range(MAX_INPUT_ATTEMPTS):
         resume_value = interrupt(payload)
         try:
-            approved, reject_reason = _parse_resume(resume_value)
+            decision = _parse_resume(resume_value)
         except ValueError as exc:
-            logger.warning("SG4 잘못된 승인 입력 thread_id=%s: %s", state.thread_id, exc)
+            logger.warning("SG4 잘못된 승인 입력 trace_id=%s: %s", state.thread_id, exc)
             payload = {**payload, "invalid_input": str(exc)}
             continue
-        if approved:
-            return {"approved": True, "rejected": False, "reject_reason": None}
+        common = {
+            "decision_result": decision["result"],
+            "approver_id": decision["user_id"],
+            "changes": decision["changes"],
+        }
+        if decision["result"] == "APPROVED":
+            return {**common, "approved": True, "rejected": False, "reject_reason": None}
         return {
+            **common,
             "approved": False,
             "rejected": True,
-            "reject_reason": reject_reason,
-            "sg4_outcome": "REWRITE_REQUIRED",
+            "reject_reason": decision["reason"],
+            # REVISE 는 SG3 로 돌려 재작성, REJECTED 는 최종 반려로 종료
+            "sg4_outcome": "REWRITE_REQUIRED" if decision["result"] == "REVISE" else "REJECTED",
         }
     return {
         "approved": False,
         "sg4_outcome": "INVALID_APPROVAL",
         "error": "승인 입력이 올바르지 않아 중단했습니다",
     }
+
+
+def _failed(state: SG4State, what: str, exc: Exception) -> dict[str, Any]:
+    """도구 호출이 재시도 후에도 실패했을 때. 오류 내용은 개인정보를 가려서 남긴다."""
+    detail = mask_pii(f"{type(exc).__name__}: {exc}")
+    logger.error("SG4 %s trace_id=%s %s", what, state.thread_id, detail)
+    return {"recheck_ok": False, "sg4_outcome": "FAILED", "error": f"{what}: {detail}"}
 
 
 async def recheck_supply(state: SG4State) -> dict[str, Any]:
@@ -118,7 +156,10 @@ async def recheck_supply(state: SG4State) -> dict[str, Any]:
     응답에 빠진 부품이 있으면 확인하지 못한 것이므로 실패로 본다.
     """
     plan = [{"part_id": pid, "required_qty": qty} for pid, qty in state.final_plan.items()]
-    supply = await tools.business_check_parts_supply(state.due_date, plan, state.base_date)
+    try:
+        supply = await tools.business_check_parts_supply(state.due_date, plan, state.base_date)
+    except Exception as exc:  # noqa: BLE001 - 재시도 후에도 실패하면 FAILED 로 끝낸다
+        return _failed(state, "재고 재확인 실패", exc)
     returned = {p.part_id: p for p in supply.parts}
     problems = [
         f"{pid} 확인 불가" for pid in state.final_plan if pid not in returned
@@ -142,7 +183,11 @@ async def register_quote(state: SG4State) -> dict[str, Any]:
     승인 여부는 백엔드가 확인한다(승인되지 않은 견적이면 409). 중복 등록 방지 키는
     business-mcp 서버가 붙인다.
     """
-    result = await tools.business_register_quote(state.quote_id, state.thread_id)
+    try:
+        result = await tools.business_register_quote(state.quote_id, state.thread_id)
+    except Exception as exc:  # noqa: BLE001 - 재시도 후에도 실패하면 FAILED 로 끝낸다
+        # 응답만 못 받았고 실제로는 등록됐을 수 있다. 다시 시도하지 않고 사람이 확인하게 한다.
+        return _failed(state, "견적 등록 실패(등록 여부 확인 필요)", exc)
     return {
         "registered_quote_id": result.quote_id,
         "registration_status": result.status,
