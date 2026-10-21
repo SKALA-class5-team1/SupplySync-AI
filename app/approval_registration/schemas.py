@@ -5,7 +5,7 @@ SG4 흐름: 승인 안내 준비 -> 승인 요청(멈춤) -> 재고 재확인 ->
 승인·반려 기록은 백엔드가 저장하며, SG4는 백엔드가 resume 해 줄 때까지 대기한다.
 MCP 도구 입출력 모델은 business-mcp 레포의 CLAUDE.md(check_parts_supply, register_quote)를 따른다.
 """
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -65,6 +65,14 @@ class ApprovalCard(BaseModel):
     evidence: list[DocHit] = Field(default_factory=list, description="근거 문서 조각")
 
 
+# SG4 가 상위 그래프에 돌려주는 결과
+#   REGISTERED            견적 등록 완료
+#   REWRITE_REQUIRED      반려됨 -> 상위 그래프가 SG3 로 돌려 보낸다
+#   STOCK_REVIEW_REQUIRED 승인 뒤 재고가 부족해 등록 차단. 다음 단계(SG2 복귀 등)는 팀 합의 필요
+#   INVALID_APPROVAL      승인 입력이 계속 잘못 와서 중단
+Sg4Outcome = Literal["REGISTERED", "REWRITE_REQUIRED", "STOCK_REVIEW_REQUIRED", "INVALID_APPROVAL"]
+
+
 class SG4State(BaseModel):
     """SG4 서브그래프 상태."""
 
@@ -85,8 +93,11 @@ class SG4State(BaseModel):
     # --- SG4가 채우는 값 ---
     approval_card: Optional[ApprovalCard] = None
     approved: bool = False
+    rejected: bool = False
+    reject_reason: Optional[str] = Field(default=None, description="반려 사유 (상위 그래프가 SG3 재작성에 쓴다)")
     supply: Optional[SupplyResult] = None
     recheck_ok: Optional[bool] = None
+    sg4_outcome: Optional[Sg4Outcome] = Field(default=None, description="SG4 결과. 상위 그래프의 분기 기준")
     registered_quote_id: Optional[Union[int, str]] = None
     registration_status: Optional[str] = None
     error: Optional[str] = None

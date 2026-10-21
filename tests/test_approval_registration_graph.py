@@ -90,6 +90,7 @@ def test_approval_then_register():
         done = await app.ainvoke(Command(resume={"approved": True}), cfg)
         assert done["recheck_ok"] is True, "계획 수량이 가용 재고 안이면 통과해야 한다"
         assert done["registration_status"] == "REGISTERED"
+        assert done["sg4_outcome"] == "REGISTERED"
         assert done["registered_quote_id"] == "Q-2026-1019-001"
 
         check = [c for c in fake.calls if c[1] == "check_parts_supply"][0]
@@ -111,6 +112,7 @@ def test_no_register_when_stock_short():
         app, cfg, _, fake = await _start(short)
         done = await app.ainvoke(Command(resume={"approved": True}), cfg)
         assert done["recheck_ok"] is False
+        assert done["sg4_outcome"] == "STOCK_REVIEW_REQUIRED"
         assert "register_quote" not in fake.names(), "재고가 부족해지면 등록하면 안 된다"
         assert "P-MCU-G1" in done["error"]
     asyncio.run(run())
@@ -128,6 +130,59 @@ def test_no_register_when_part_missing():
     asyncio.run(run())
 
 
+def test_reject_records_reason_and_stops():
+    async def run():
+        app, cfg, _, fake = await _start(SUPPLY_SAMPLE)
+        done = await app.ainvoke(
+            Command(resume={"approved": False, "reject_reason": "보증 조건 재협의 필요"}), cfg
+        )
+        assert done["rejected"] is True
+        assert done["sg4_outcome"] == "REWRITE_REQUIRED"
+        assert done["reject_reason"] == "보증 조건 재협의 필요"
+        assert "check_parts_supply" not in fake.names(), "반려되면 재고 확인도 하지 않는다"
+        assert "register_quote" not in fake.names(), "반려되면 등록하면 안 된다"
+    asyncio.run(run())
+
+
+def test_invalid_resume_is_not_treated_as_approval():
+    async def run():
+        app, cfg, _, fake = await _start(SUPPLY_SAMPLE)
+        bad_inputs = [
+            {"approved": "yes"},   # 불리언이 아님
+            {"approved": 1},       # 불리언이 아님
+            {"approved": None},    # 값이 없음
+        ]
+        for i, bad in enumerate(bad_inputs):
+            out = await app.ainvoke(Command(resume=bad), cfg)
+            if i < len(bad_inputs) - 1:
+                assert out["__interrupt__"][0].value.get("invalid_input"), "틀린 이유를 알려야 한다"
+            assert "register_quote" not in fake.names(), "잘못된 입력을 승인으로 보면 안 된다"
+        # 3번 틀리면 중단
+        assert out.get("sg4_outcome") == "INVALID_APPROVAL"
+        assert "check_parts_supply" not in fake.names()
+    asyncio.run(run())
+
+
+def test_invalid_then_valid_resume_continues():
+    async def run():
+        app, cfg, _, fake = await _start(SUPPLY_SAMPLE)
+        again = await app.ainvoke(Command(resume={"approved": "maybe"}), cfg)
+        assert "__interrupt__" in again, "잘못된 입력이면 다시 승인을 기다려야 한다"
+        assert "register_quote" not in fake.names()
+        done = await app.ainvoke(Command(resume={"approved": True}), cfg)
+        assert done["sg4_outcome"] == "REGISTERED"
+    asyncio.run(run())
+
+
+def test_reject_needs_reason():
+    async def run():
+        app, cfg, _, fake = await _start(SUPPLY_SAMPLE)
+        again = await app.ainvoke(Command(resume={"approved": False}), cfg)
+        assert "__interrupt__" in again, "사유 없는 반려는 받지 않고 다시 묻는다"
+        assert "reject_reason" in again["__interrupt__"][0].value["invalid_input"]
+    asyncio.run(run())
+
+
 if __name__ == "__main__":
     test_approval_then_register()
     print("OK: 승인 대기 -> resume -> 재확인 -> 등록 (최종 계획 수량으로 확인, 등록 인자 확인)")
@@ -135,3 +190,11 @@ if __name__ == "__main__":
     print("OK: 재고가 부족해지면 등록하지 않음")
     test_no_register_when_part_missing()
     print("OK: 응답에 빠진 부품이 있으면 등록하지 않음")
+    test_reject_records_reason_and_stops()
+    print("OK: 반려되면 사유를 남기고 재고 확인·등록 없이 끝남")
+    test_invalid_resume_is_not_treated_as_approval()
+    print("OK: 잘못된 승인 입력은 승인으로 보지 않고, 계속 틀리면 중단")
+    test_invalid_then_valid_resume_continues()
+    print("OK: 잘못된 입력 뒤 올바른 승인이 오면 이어서 진행")
+    test_reject_needs_reason()
+    print("OK: 사유 없는 반려는 받지 않음")
